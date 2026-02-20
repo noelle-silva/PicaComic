@@ -76,24 +76,33 @@ class _SmoothScrollProviderState extends State<SmoothScrollProvider> {
             });
           }
           if (!_isMouseScroll) return;
-          var currentLocation = _controller.position.pixels;
-          _futurePosition ??= currentLocation;
-          double k = (_futurePosition! - currentLocation).abs() / 1600 + 1;
-          _futurePosition =
-              _futurePosition! + pointerSignal.scrollDelta.dy * k;
-          _futurePosition = _futurePosition!.clamp(
-              _controller.position.minScrollExtent,
-              _controller.position.maxScrollExtent);
-          _controller.animateTo(_futurePosition!,
-              duration: _fastAnimationDuration, curve: Curves.linear);
+          if (!_controller.hasClients) return;
+          final position = _controller.position;
+          if (!position.hasContentDimensions) return;
+
+          final before = position.pixels;
+          _futurePosition ??= before;
+          final k = (_futurePosition! - before).abs() / 1600 + 1;
+          _futurePosition = (_futurePosition! + pointerSignal.scrollDelta.dy * k)
+              .clamp(position.minScrollExtent, position.maxScrollExtent);
+          final target = _futurePosition!;
+
+          Future.microtask(() {
+            if (!mounted || !_controller.hasClients) return;
+            final p = _controller.position;
+            if (!p.hasContentDimensions) return;
+            final after = p.pixels;
+            if (after == before) return;
+            _controller.jumpTo(before);
+            _controller.animateTo(target,
+                duration: _fastAnimationDuration, curve: Curves.linear);
+          });
         }
       },
       child: widget.builder(
         context,
         _controller,
-        _isMouseScroll
-            ? const NeverScrollableScrollPhysics()
-            : const ClampingScrollPhysics(),
+        const ClampingScrollPhysics(),
       ),
     );
   }
