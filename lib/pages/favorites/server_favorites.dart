@@ -1,11 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_reorderable_grid_view/widgets/reorderable_builder.dart';
-import 'package:pica_comic/base.dart';
 import 'package:pica_comic/components/components.dart';
-import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/foundation/image_loader/cached_image.dart';
-import 'package:pica_comic/foundation/local_favorites.dart';
 import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/pages/comic_page.dart';
 import 'package:pica_comic/tools/translations.dart';
@@ -257,37 +254,6 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
     }
   }
 
-  FavoriteType _favoriteTypeFromSourceKey(String sourceKey) {
-    switch (sourceKey) {
-      case 'picacg':
-        return FavoriteType.picacg;
-      case 'ehentai':
-        return FavoriteType.ehentai;
-      case 'jm':
-        return FavoriteType.jm;
-      case 'hitomi':
-        return FavoriteType.hitomi;
-      case 'htmanga':
-        return FavoriteType.htManga;
-      case 'nhentai':
-        return FavoriteType.nhentai;
-      default:
-        final src = ComicSource.find(sourceKey);
-        return FavoriteType(src?.intKey ?? sourceKey.hashCode);
-    }
-  }
-
-  FavoriteItem _toFavoriteItem(ServerFavoriteItem item) {
-    return FavoriteItem(
-      target: item.target,
-      name: item.title,
-      coverPath: item.cover,
-      author: item.subtitle,
-      type: _favoriteTypeFromSourceKey(item.sourceKey),
-      tags: item.tags,
-    );
-  }
-
   void _openComic(ServerFavoriteItem item) {
     context.to(
       () => ComicPage(
@@ -357,7 +323,6 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
       final item = items[index];
       return _ServerFavoriteTile(
         item: item,
-        favoriteItem: _toFavoriteItem(item),
         onTap: () => _openComic(item),
         onMove: () => _moveItem(item),
         onDelete: () => _deleteItem(item),
@@ -385,7 +350,7 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
       onReorder: (reorderFunc) async {
         final reordered = reorderFunc(items);
         setState(() {
-          items = List<ServerFavoriteItem>.from(reordered as List);
+          items = List<ServerFavoriteItem>.from(reordered);
         });
         try {
           await PicaServer.instance.reorderFavorites(
@@ -462,7 +427,6 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
 class _ServerFavoriteTile extends ComicTile {
   const _ServerFavoriteTile({
     required this.item,
-    required this.favoriteItem,
     required this.onTap,
     required this.onMove,
     required this.onDelete,
@@ -471,7 +435,6 @@ class _ServerFavoriteTile extends ComicTile {
   });
 
   final ServerFavoriteItem item;
-  final FavoriteItem favoriteItem;
   final VoidCallback onTap;
   final VoidCallback onMove;
   final VoidCallback onDelete;
@@ -480,7 +443,10 @@ class _ServerFavoriteTile extends ComicTile {
 
   @override
   Widget get image => AnimatedImage(
-        image: CachedImageProvider(item.cover),
+        image: CachedImageProvider(
+          item.cover,
+          sourceKey: item.sourceKey,
+        ),
         fit: BoxFit.cover,
         height: double.infinity,
         width: double.infinity,

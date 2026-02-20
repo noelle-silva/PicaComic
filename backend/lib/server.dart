@@ -12,6 +12,7 @@ import 'package:sqlite3/sqlite3.dart';
 Handler buildHandler({
   required String storageDir,
   String? apiKey,
+  bool enableUserdata = false,
 }) {
   final storage = Directory(storageDir);
   storage.createSync(recursive: true);
@@ -295,32 +296,41 @@ Handler buildHandler({
     return Response.ok(file.openRead(), headers: {'content-type': mime});
   });
 
-  api.post('/v1/userdata', (Request req) async {
-    final parts = await _readMultipart(req);
-    final filePart = parts.files['file'];
-    if (filePart == null) {
-      return _json(400, {'ok': false, 'error': 'missing file'});
-    }
-    final outDir = Directory(p.join(storage.path, 'userdata'))
-      ..createSync(recursive: true);
-    final outPath = p.join(outDir.path, 'userdata.picadata');
-    await filePart.saveTo(outPath);
-    return _json(200, {'ok': true});
-  });
+  if (enableUserdata) {
+    api.post('/v1/userdata', (Request req) async {
+      final parts = await _readMultipart(req);
+      final filePart = parts.files['file'];
+      if (filePart == null) {
+        return _json(400, {'ok': false, 'error': 'missing file'});
+      }
+      final outDir = Directory(p.join(storage.path, 'userdata'))
+        ..createSync(recursive: true);
+      final outPath = p.join(outDir.path, 'userdata.picadata');
+      await filePart.saveTo(outPath);
+      return _json(200, {'ok': true});
+    });
 
-  api.get('/v1/userdata', (Request req) {
-    final file = File(p.join(storage.path, 'userdata', 'userdata.picadata'));
-    if (!file.existsSync()) {
-      return _json(404, {'ok': false, 'error': 'not found'});
-    }
-    return Response.ok(
-      file.openRead(),
-      headers: {
-        'content-type': 'application/octet-stream',
-        'content-disposition': 'attachment; filename="userdata.picadata"',
-      },
-    );
-  });
+    api.get('/v1/userdata', (Request req) {
+      final file = File(p.join(storage.path, 'userdata', 'userdata.picadata'));
+      if (!file.existsSync()) {
+        return _json(404, {'ok': false, 'error': 'not found'});
+      }
+      return Response.ok(
+        file.openRead(),
+        headers: {
+          'content-type': 'application/octet-stream',
+          'content-disposition': 'attachment; filename="userdata.picadata"',
+        },
+      );
+    });
+  } else {
+    api.post('/v1/userdata', (Request req) {
+      return _json(410, {'ok': false, 'error': 'userdata disabled'});
+    });
+    api.get('/v1/userdata', (Request req) {
+      return _json(410, {'ok': false, 'error': 'userdata disabled'});
+    });
+  }
 
   Future<Map<String, dynamic>?> readJsonMap(Request req) async {
     final body = await req.readAsString();

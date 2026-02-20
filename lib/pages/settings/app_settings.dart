@@ -725,8 +725,6 @@ void serverSettings(BuildContext context) {
   String url = (appdata.settings.elementAtOrNull(90) ?? "").trim();
   String apiKey = (appdata.implicitData.elementAtOrNull(4) ?? "").trim();
 
-  int action = 0;
-
   String normalizeUrl(String input) {
     var v = input.trim();
     while (v.endsWith('/')) {
@@ -783,34 +781,6 @@ void serverSettings(BuildContext context) {
             ),
           ),
           const SizedBox(height: 8),
-          StatefulBuilder(
-            builder: (context, setState) {
-              return Row(
-                children: [
-                  Text("立即执行:".tl),
-                  Radio<int>(
-                    value: 0,
-                    groupValue: action,
-                    onChanged: (v) => setState(() => action = v ?? 0),
-                  ),
-                  Text("仅保存".tl),
-                  Radio<int>(
-                    value: 1,
-                    groupValue: action,
-                    onChanged: (v) => setState(() => action = v ?? 1),
-                  ),
-                  Text("上传用户数据".tl),
-                  Radio<int>(
-                    value: 2,
-                    groupValue: action,
-                    onChanged: (v) => setState(() => action = v ?? 2),
-                  ),
-                  Text("下载用户数据".tl),
-                ],
-              );
-            },
-          ),
-          const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -839,32 +809,7 @@ void serverSettings(BuildContext context) {
                   appdata.updateSettings(false);
                   appdata.writeImplicitData();
 
-                  if (normalizedUrl.isEmpty || action == 0) {
-                    App.globalBack();
-                    return;
-                  }
-
-                  var dialog = showLoadingDialog(
-                    context,
-                    allowCancel: false,
-                    barrierDismissible: false,
-                  );
-                  try {
-                    if (action == 1) {
-                      await PicaServer.instance.uploadUserData();
-                      dialog.close();
-                      showToast(message: "上传完成".tl);
-                      App.globalBack();
-                    } else {
-                      await PicaServer.instance.downloadUserDataAndImport();
-                      dialog.close();
-                      showToast(message: "下载完成".tl);
-                      App.globalBack();
-                    }
-                  } catch (e) {
-                    dialog.close();
-                    showToast(message: "${"操作失败".tl}: $e");
-                  }
+                  App.globalBack();
                 },
                 child: Text("提交".tl),
               ),
