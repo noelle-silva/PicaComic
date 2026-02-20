@@ -120,6 +120,7 @@ class Appdata {
     "0", //88 jm auto checkin
     "2.0.11", //89 jm app version
     "", //90 private server url
+    "0", //91 本地收藏夹排序: 0-正序, 1-倒序
   ];
 
   /// 隐式数据, 用于存储一些不需要用户设置的数据, 此数据通常为某些组件的状态, 此设置不应当被同步

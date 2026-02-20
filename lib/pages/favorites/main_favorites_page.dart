@@ -79,6 +79,28 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
   final controller = StateController.putIfNotExists<FavoritesPageController>(
       FavoritesPageController());
 
+  bool get _isLocalFavoritesDescOrder {
+    return appdata.settings.length > 91 && appdata.settings[91] == "1";
+  }
+
+  void _toggleLocalFavoritesOrder() {
+    if (appdata.settings.length == 91) {
+      appdata.settings.add("0");
+    }
+    if (appdata.settings.length <= 91) {
+      showToast(message: "需要重启应用后生效".tl);
+      return;
+    }
+    appdata.settings[91] = _isLocalFavoritesDescOrder ? "0" : "1";
+    appdata.updateSettings();
+    if (controller.current != null && controller.isNetwork == false) {
+      StateController.findOrNull(tag: "ComicsPageView ${controller.current}")
+          ?.refresh();
+    }
+    showToast(message: (_isLocalFavoritesDescOrder ? "倒序".tl : "正序".tl));
+    controller.update();
+  }
+
   @override
   Widget build(BuildContext context) {
     return StateBuilder<FavoritesPageController>(builder: (controller) {
@@ -281,6 +303,19 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
               style: const TextStyle(fontSize: 16),
             ).paddingBottom(3),
             const Spacer(),
+            if (!controller.selectingFolder && controller.isNetwork == false)
+              Tooltip(
+                message: (_isLocalFavoritesDescOrder ? "倒序".tl : "正序".tl),
+                child: IconButton(
+                  onPressed: _toggleLocalFavoritesOrder,
+                  icon: Icon(
+                    _isLocalFavoritesDescOrder
+                        ? Icons.arrow_downward
+                        : Icons.arrow_upward,
+                    color: iconColor,
+                  ),
+                ),
+              ),
             if (controller.selectingFolder)
               const Icon(Icons.keyboard_arrow_up)
             else

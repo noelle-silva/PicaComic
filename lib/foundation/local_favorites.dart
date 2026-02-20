@@ -585,9 +585,10 @@ class LocalFavoritesManager {
   }
 
   List<FavoriteItem> getAllComics(String folder) {
+    final desc = appdata.settings.length > 91 && appdata.settings[91] == "1";
     var rows = _db.select("""
         select * from "$folder"
-        ORDER BY display_order;
+        ORDER BY display_order ${desc ? "DESC" : "ASC"};
       """);
     return rows.map((element) => FavoriteItem.fromRow(element)).toList();
   }
