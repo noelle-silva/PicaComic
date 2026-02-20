@@ -46,6 +46,10 @@ class MePage extends StatelessWidget {
                               height: 12,
                             ),
                             buildDownload(context, width),
+                            const SizedBox(
+                              height: 12,
+                            ),
+                            buildServerLibrary(context, width),
                           ],
                         ),
                       ),

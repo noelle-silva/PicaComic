@@ -239,7 +239,11 @@ Future<void> _zipDirectory(Directory sourceDir, String outZipPath) async {
             final rel = entry.path.substring(sourcePath.length);
             final normalized =
                 rel.replaceAll('\\', '/').replaceFirst(RegExp(r'^/+'), '');
-            zip.addFile(normalized, entry.path);
+            if (Platform.isWindows) {
+              zip.addFileFromBytes(normalized, entry.readAsBytesSync());
+            } else {
+              zip.addFile(normalized, entry.path);
+            }
           }
         }
       }
