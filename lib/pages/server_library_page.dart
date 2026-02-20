@@ -79,61 +79,44 @@ class _ServerLibraryPageState extends State<ServerLibraryPage> {
               ? _buildError(context)
               : RefreshIndicator(
                   onRefresh: _load,
-                  child: ListView.separated(
-                    itemCount: comics.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final comic = comics[index];
-                      return ListTile(
-                        leading: _buildCover(comic),
-                        title: Text(comic.title,
-                            maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: Text(
-                          comic.subtitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () async {
-                          final changed = await context.to<bool>(
-                            () => ServerComicDetailPage(comicId: comic.id),
-                          );
-                          if (changed == true) {
-                            _load();
-                          }
-                        },
-                      );
-                    },
-                  ),
+                  child: _buildGrid(context),
                 ),
     );
   }
 
-  Widget _buildCover(ServerComic comic) {
-    final url = comic.coverUrl;
-    if (url == null || url.isEmpty) {
-      return const SizedBox(
-        width: 48,
-        height: 64,
-        child: Icon(Icons.photo, size: 28),
+  Widget _buildGrid(BuildContext context) {
+    if (comics.isEmpty) {
+      return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          const SizedBox(height: 120),
+          const Icon(Icons.collections_bookmark_outlined, size: 56),
+          const SizedBox(height: 12),
+          Center(child: Text("暂无漫画".tl)),
+        ],
       );
     }
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: SizedBox(
-        width: 48,
-        height: 64,
-        child: Image(
-          fit: BoxFit.cover,
-          filterQuality: FilterQuality.medium,
-          image: StreamImageProvider(
-            () => ImageManager()
-                .getImage(url, PicaServer.instance.imageHeaders()),
-            url,
-          ),
-        ),
-      ),
+
+    return GridView.builder(
+      physics: const AlwaysScrollableScrollPhysics(),
+      gridDelegate: SliverGridDelegateWithComics(),
+      itemCount: comics.length,
+      itemBuilder: (context, index) {
+        final comic = comics[index];
+        return _ServerComicTile(
+          comic,
+          onTap: () => _openComic(context, comic),
+        );
+      },
     );
+  }
+
+  void _openComic(BuildContext context, ServerComic comic) {
+    context
+        .to<bool>(() => ServerComicDetailPage(comicId: comic.id))
+        .then((changed) {
+      if (changed == true) _load();
+    });
   }
 
   Widget _buildError(BuildContext context) {
@@ -154,6 +137,57 @@ class _ServerLibraryPageState extends State<ServerLibraryPage> {
       ),
     );
   }
+}
+
+class _ServerComicTile extends ComicTile {
+  const _ServerComicTile(this.comic, {required this.onTap});
+
+  final ServerComic comic;
+
+  final VoidCallback onTap;
+
+  @override
+  bool get enableLongPressed => false;
+
+  @override
+  String get title => comic.title;
+
+  @override
+  String get subTitle => "";
+
+  @override
+  String get description => comic.subtitle;
+
+  @override
+  List<String>? get tags => [...comic.tags];
+
+  @override
+  Widget get image {
+    final url = comic.coverUrl;
+    if (url == null || url.isEmpty) {
+      return const ColoredBox(
+        color: Colors.black12,
+        child: Center(child: Icon(Icons.photo, size: 36)),
+      );
+    }
+    return Image(
+      fit: BoxFit.cover,
+      filterQuality: FilterQuality.medium,
+      width: double.infinity,
+      height: double.infinity,
+      image: StreamImageProvider(
+        () =>
+            ImageManager().getImage(url, PicaServer.instance.imageHeaders()),
+        url,
+      ),
+    );
+  }
+
+  @override
+  void onTap_() => onTap();
+
+  @override
+  void onSecondaryTap_(TapDownDetails details) => onTap();
 }
 
 class ServerComicDetailPage extends StatefulWidget {
