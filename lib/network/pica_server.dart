@@ -161,6 +161,70 @@ class PicaServer {
     if (apiKey.isEmpty) return {};
     return {'X-Api-Key': apiKey};
   }
+
+  Future<ServerReadInfo> getReadInfo(String id) async {
+    final dio = _dio();
+    final res = await dio.get('/api/v1/comics/${Uri.encodeComponent(id)}/read');
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) throw Exception(data['error'] ?? 'request failed');
+    return ServerReadInfo.fromMap(Map<String, dynamic>.from(data));
+  }
+
+  Future<List<String>> listPages(String id, int ep) async {
+    final dio = _dio();
+    final res = await dio.get(
+      '/api/v1/comics/${Uri.encodeComponent(id)}/pages',
+      queryParameters: {'ep': ep},
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) throw Exception(data['error'] ?? 'request failed');
+    final pages = data['pages'];
+    if (pages is! List) return const [];
+    return pages.map((e) => e.toString()).toList();
+  }
+
+  Future<void> deleteComic(String id) async {
+    final dio = _dio();
+    await dio.delete('/api/v1/comics/${Uri.encodeComponent(id)}');
+  }
+}
+
+class ServerReadInfo {
+  final bool hasEps;
+  final List<ServerEp> eps;
+
+  const ServerReadInfo({
+    required this.hasEps,
+    required this.eps,
+  });
+
+  factory ServerReadInfo.fromMap(Map<String, dynamic> map) {
+    final hasEps = map['hasEps'] == true;
+    final epsRaw = map['eps'];
+    final eps = (epsRaw is List)
+        ? epsRaw
+            .whereType<Map>()
+            .map((e) => ServerEp.fromMap(Map<String, dynamic>.from(e)))
+            .toList()
+        : const <ServerEp>[];
+    return ServerReadInfo(hasEps: hasEps, eps: eps);
+  }
+}
+
+class ServerEp {
+  final int ep;
+  final String title;
+
+  const ServerEp({required this.ep, required this.title});
+
+  factory ServerEp.fromMap(Map<String, dynamic> map) {
+    return ServerEp(
+      ep: int.tryParse((map['ep'] ?? '').toString()) ?? 0,
+      title: (map['title'] ?? '').toString(),
+    );
+  }
 }
 
 class ServerComic {

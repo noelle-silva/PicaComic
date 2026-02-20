@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
+import 'package:archive/archive_io.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:shelf/shelf.dart';
@@ -20,6 +20,100 @@ Handler buildHandler({
   final db = sqlite3.open(dbFile.path);
   _initDb(db);
 
+  final extracting = <String, Future<void>>{};
+
+  bool hasAnyPageFile(Directory pagesDir) {
+    if (!pagesDir.existsSync()) return false;
+    bool isPageFile(String name) {
+      final base = name.replaceFirst(RegExp(r'\..+$'), '');
+      return RegExp(r'^\d+$').hasMatch(base);
+    }
+
+    try {
+      for (final entity in pagesDir.listSync()) {
+        if (entity is File) {
+          if (isPageFile(p.basename(entity.path))) return true;
+        } else if (entity is Directory) {
+          for (final child in entity.listSync()) {
+            if (child is File && isPageFile(p.basename(child.path)))
+              return true;
+          }
+        }
+      }
+    } catch (_) {
+      return false;
+    }
+    return false;
+  }
+
+  int directorySizeBytes(Directory dir) {
+    var total = 0;
+    try {
+      for (final entity in dir.listSync(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          total += entity.lengthSync();
+        }
+      }
+    } catch (_) {
+      // ignore
+    }
+    return total;
+  }
+
+  Future<void> ensureExtracted(String id, String zipPath) async {
+    final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
+    final pagesDir = Directory(p.join(comicDir.path, 'pages'));
+    final marker = File(p.join(pagesDir.path, '.extracted'));
+
+    if (marker.existsSync() && hasAnyPageFile(pagesDir)) return;
+
+    Future<void> run() async {
+      if (pagesDir.existsSync()) {
+        try {
+          pagesDir.deleteSync(recursive: true);
+        } catch (_) {
+          // ignore
+        }
+      }
+      pagesDir.createSync(recursive: true);
+
+      InputFileStream? input;
+      try {
+        input = InputFileStream(zipPath);
+        final archive = ZipDecoder().decodeBuffer(input);
+        await extractArchiveToDisk(archive, pagesDir.path);
+      } finally {
+        try {
+          input?.close();
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      marker.createSync(recursive: true);
+      marker.writeAsStringSync(DateTime.now().toIso8601String());
+
+      try {
+        File(zipPath).deleteSync();
+        db.execute(
+          'update comics set zip_path = null, zip_sha256 = null where id = ?',
+          [id],
+        );
+      } catch (_) {
+        // ignore
+      }
+    }
+
+    final task = extracting[id];
+    if (task != null) return task;
+
+    final future = run().whenComplete(() {
+      extracting.remove(id);
+    });
+    extracting[id] = future;
+    return future;
+  }
+
   final api = Router();
 
   api.get('/v1/health', (Request req) {
@@ -32,13 +126,146 @@ Handler buildHandler({
     );
   });
 
+  api.get('/v1/comics/<id>/read', (Request req, String id) {
+    final row = db
+        .select('select meta_json from comics where id = ?', [id]).firstOrNull;
+    if (row == null) return _json(404, {'ok': false, 'error': 'not found'});
+
+    final metaJson = row['meta_json'] as String?;
+    final meta = _tryDecodeJson(metaJson);
+    if (meta is! Map) return _json(500, {'ok': false, 'error': 'invalid meta'});
+
+    final type = int.tryParse((meta['type'] ?? '').toString()) ?? -1;
+
+    final jsonObj = meta['json'];
+    final data = jsonObj is Map
+        ? Map<String, Object?>.from(jsonObj)
+        : const <String, Object?>{};
+
+    final hasEps =
+        type == 0 || type == 2 || (type == 6 && data['chapters'] is Map);
+
+    List<Map<String, Object?>>? eps;
+    if (hasEps) {
+      final downloaded = data['downloadedChapters'] ?? data['downloadedEps'];
+      final downloadedList = downloaded is List ? downloaded : const [];
+
+      List<String>? titles;
+      final chapters = data['chapters'];
+      if (chapters is List) {
+        titles = chapters.map((e) => e.toString()).toList();
+      } else if (chapters is Map) {
+        titles = chapters.values.map((e) => e.toString()).toList();
+      } else {
+        final comic = data['comic'];
+        if (comic is Map) {
+          final epNames = comic['epNames'];
+          if (epNames is List) {
+            titles = epNames.map((e) => e.toString()).toList();
+          }
+        }
+      }
+
+      final result = <Map<String, Object?>>[];
+      for (final e in downloadedList) {
+        final idx = int.tryParse(e.toString());
+        if (idx == null) continue;
+        final epNo = idx + 1;
+        final title = (titles != null && idx >= 0 && idx < titles.length)
+            ? titles[idx]
+            : 'EP $epNo';
+        result.add({'ep': epNo, 'title': title});
+      }
+      result.sort((a, b) => (a['ep'] as int).compareTo(b['ep'] as int));
+      eps = result;
+    }
+
+    return _json(200, {'ok': true, 'id': id, 'hasEps': hasEps, 'eps': eps});
+  });
+
+  api.get('/v1/comics/<id>/pages', (Request req, String id) async {
+    final ep = int.tryParse(req.url.queryParameters['ep'] ?? '0') ?? 0;
+    final row =
+        db.select('select zip_path from comics where id = ?', [id]).firstOrNull;
+    if (row == null) return _json(404, {'ok': false, 'error': 'not found'});
+
+    final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
+    final pagesRoot = Directory(p.join(comicDir.path, 'pages'));
+    final pagesDir =
+        ep <= 0 ? pagesRoot : Directory(p.join(pagesRoot.path, ep.toString()));
+
+    final zipPath = row['zip_path'] as String?;
+    if ((!pagesDir.existsSync() || !hasAnyPageFile(pagesRoot)) &&
+        zipPath != null &&
+        File(zipPath).existsSync()) {
+      await ensureExtracted(id, zipPath);
+    }
+
+    if (!pagesDir.existsSync()) {
+      return _json(404, {'ok': false, 'error': 'ep not found'});
+    }
+
+    final files = pagesDir
+        .listSync()
+        .whereType<File>()
+        .map((f) => p.basename(f.path))
+        .where((name) {
+      final base = name.replaceFirst(RegExp(r'\..+$'), '');
+      return RegExp(r'^\d+$').hasMatch(base);
+    }).toList();
+
+    files.sort((a, b) {
+      final ai = int.tryParse(a.replaceFirst(RegExp(r'\..+$'), '')) ?? 0;
+      final bi = int.tryParse(b.replaceFirst(RegExp(r'\..+$'), '')) ?? 0;
+      final c = ai.compareTo(bi);
+      return c != 0 ? c : a.compareTo(b);
+    });
+
+    return _json(200, {'ok': true, 'ep': ep, 'pages': files});
+  });
+
+  api.get('/v1/comics/<id>/image', (Request req, String id) async {
+    final ep = int.tryParse(req.url.queryParameters['ep'] ?? '0') ?? 0;
+    final name = (req.url.queryParameters['name'] ?? '').trim();
+    if (name.isEmpty ||
+        name.contains('/') ||
+        name.contains('\\') ||
+        name.contains('..')) {
+      return _json(400, {'ok': false, 'error': 'invalid name'});
+    }
+
+    final row =
+        db.select('select zip_path from comics where id = ?', [id]).firstOrNull;
+    if (row == null) return _json(404, {'ok': false, 'error': 'not found'});
+
+    final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
+    final pagesRoot = Directory(p.join(comicDir.path, 'pages'));
+    final pagesDir =
+        ep <= 0 ? pagesRoot : Directory(p.join(pagesRoot.path, ep.toString()));
+
+    final zipPath = row['zip_path'] as String?;
+    if ((!pagesDir.existsSync() || !hasAnyPageFile(pagesRoot)) &&
+        zipPath != null &&
+        File(zipPath).existsSync()) {
+      await ensureExtracted(id, zipPath);
+    }
+
+    final file = File(p.join(pagesDir.path, name));
+    if (!file.existsSync())
+      return _json(404, {'ok': false, 'error': 'not found'});
+
+    final mime = lookupMimeType(file.path) ?? 'application/octet-stream';
+    return Response.ok(file.openRead(), headers: {'content-type': mime});
+  });
+
   api.post('/v1/userdata', (Request req) async {
     final parts = await _readMultipart(req);
     final filePart = parts.files['file'];
     if (filePart == null) {
       return _json(400, {'ok': false, 'error': 'missing file'});
     }
-    final outDir = Directory(p.join(storage.path, 'userdata'))..createSync(recursive: true);
+    final outDir = Directory(p.join(storage.path, 'userdata'))
+      ..createSync(recursive: true);
     final outPath = p.join(outDir.path, 'userdata.picadata');
     await filePart.saveTo(outPath);
     return _json(200, {'ok': true});
@@ -87,18 +314,50 @@ Handler buildHandler({
     final zipPath = p.join(comicDir.path, 'comic.zip');
     await zipPart.saveTo(zipPath);
 
+    final pagesDir = Directory(p.join(comicDir.path, 'pages'));
+    if (pagesDir.existsSync()) {
+      try {
+        pagesDir.deleteSync(recursive: true);
+      } catch (_) {
+        // ignore
+      }
+    }
+    pagesDir.createSync(recursive: true);
+
+    InputFileStream? input;
+    try {
+      input = InputFileStream(zipPath);
+      final archive = ZipDecoder().decodeBuffer(input);
+      await extractArchiveToDisk(archive, pagesDir.path);
+    } finally {
+      try {
+        input?.close();
+      } catch (_) {
+        // ignore
+      }
+      try {
+        File(zipPath).deleteSync();
+      } catch (_) {
+        // ignore
+      }
+    }
+
     String? coverPath;
     final coverPart = parts.files['cover'];
     if (coverPart != null) {
       coverPath = p.join(comicDir.path, 'cover.jpg');
       await coverPart.saveTo(coverPath);
+    } else {
+      final extractedCover = File(p.join(pagesDir.path, 'cover.jpg'));
+      if (extractedCover.existsSync()) {
+        coverPath = extractedCover.path;
+      }
     }
 
     final now = DateTime.now().millisecondsSinceEpoch;
     final metaJson = jsonEncode(meta);
 
-    final zipSize = File(zipPath).lengthSync();
-    final zipSha256 = (await sha256.bind(File(zipPath).openRead()).first).toString();
+    final sizeBytes = directorySizeBytes(pagesDir);
 
     db.execute(
       '''
@@ -114,11 +373,11 @@ Handler buildHandler({
         jsonEncode(meta['tags'] ?? []),
         (meta['directory'] ?? '').toString(),
         now,
-        zipSize,
+        sizeBytes,
         metaJson,
-        zipPath,
+        null,
         coverPath,
-        zipSha256,
+        null,
       ],
     );
 
@@ -148,8 +407,10 @@ Handler buildHandler({
         'time': r['time'],
         'size': r['size'],
         'zipSha256': r['zip_sha256'],
-        'coverUrl': (r['has_cover'] as int) == 1 ? '$base/api/v1/comics/${Uri.encodeComponent(id)}/cover' : null,
-        'zipUrl': '$base/api/v1/comics/${Uri.encodeComponent(id)}/zip',
+        'coverUrl': (r['has_cover'] as int) == 1
+            ? '$base/api/v1/comics/${Uri.encodeComponent(id)}/cover'
+            : null,
+        'zipUrl': null,
       };
     }).toList();
 
@@ -175,7 +436,6 @@ Handler buildHandler({
     final coverUrl = (row['has_cover'] as int) == 1
         ? '$base/api/v1/comics/${Uri.encodeComponent(id)}/cover'
         : null;
-    final zipUrl = '$base/api/v1/comics/${Uri.encodeComponent(id)}/zip';
 
     return Response.ok(
       jsonEncode({
@@ -191,7 +451,7 @@ Handler buildHandler({
           'size': row['size'],
           'zipSha256': row['zip_sha256'],
           'coverUrl': coverUrl,
-          'zipUrl': zipUrl,
+          'zipUrl': null,
           'meta': _tryDecodeJson(row['meta_json']),
         }
       }),
@@ -200,27 +460,19 @@ Handler buildHandler({
   });
 
   api.get('/v1/comics/<id>/zip', (Request req, String id) {
-    final row = db.select('select zip_path from comics where id = ?', [id]).firstOrNull;
-    if (row == null) return _json(404, {'ok': false, 'error': 'not found'});
-    final zipPath = (row['zip_path'] as String);
-    final file = File(zipPath);
-    if (!file.existsSync()) return _json(404, {'ok': false, 'error': 'file missing'});
-    return Response.ok(
-      file.openRead(),
-      headers: {
-        'content-type': 'application/zip',
-        'content-disposition': 'attachment; filename="${_safeFileName(id)}.zip"',
-      },
-    );
+    return _json(410, {'ok': false, 'error': 'zip disabled'});
   });
 
   api.get('/v1/comics/<id>/cover', (Request req, String id) {
-    final row = db.select('select cover_path from comics where id = ?', [id]).firstOrNull;
+    final row = db
+        .select('select cover_path from comics where id = ?', [id]).firstOrNull;
     if (row == null) return _json(404, {'ok': false, 'error': 'not found'});
     final coverPath = row['cover_path'] as String?;
-    if (coverPath == null) return _json(404, {'ok': false, 'error': 'no cover'});
+    if (coverPath == null)
+      return _json(404, {'ok': false, 'error': 'no cover'});
     final file = File(coverPath);
-    if (!file.existsSync()) return _json(404, {'ok': false, 'error': 'file missing'});
+    if (!file.existsSync())
+      return _json(404, {'ok': false, 'error': 'file missing'});
     return Response.ok(
       file.openRead(),
       headers: {'content-type': 'application/octet-stream'},
@@ -228,7 +480,9 @@ Handler buildHandler({
   });
 
   api.delete('/v1/comics/<id>', (Request req, String id) {
-    final row = db.select('select zip_path, cover_path from comics where id = ?', [id]).firstOrNull;
+    final row = db.select(
+        'select zip_path, cover_path from comics where id = ?',
+        [id]).firstOrNull;
     if (row == null) return _json(404, {'ok': false, 'error': 'not found'});
     db.execute('delete from comics where id = ?', [id]);
 
@@ -335,11 +589,6 @@ Object? _tryDecodeJson(Object? value) {
 
 String _safeId(String id) {
   return id.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
-}
-
-String _safeFileName(String input) {
-  final v = input.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-  return v.isEmpty ? 'comic' : v;
 }
 
 String? _boundaryFromContentType(String? contentType) {

@@ -30,9 +30,11 @@ dart run bin/server.dart
 - `GET /api/v1/userdata`
 - `POST /api/v1/comics`：multipart
   - `meta`：JSON 字符串（包含 `id/title/subtitle/type/tags/directory/json` 等）
-  - `zip`：下载目录打包后的 zip
+  - `zip`：下载目录打包后的 zip（仅用于传输；服务器会解压为图片并丢弃 zip）
   - `cover`：可选封面文件
 - `GET /api/v1/comics`
-- `GET /api/v1/comics/{id}/zip`
 - `GET /api/v1/comics/{id}/cover`
+- `GET /api/v1/comics/{id}/read`：返回章节信息（用于在线阅读）
+- `GET /api/v1/comics/{id}/pages?ep={ep}`：返回指定章节的页面文件名列表
+- `GET /api/v1/comics/{id}/image?ep={ep}&name={filename}`：返回单页图片
 - `DELETE /api/v1/comics/{id}`

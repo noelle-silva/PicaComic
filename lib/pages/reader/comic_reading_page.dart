@@ -27,6 +27,7 @@ import 'package:pica_comic/base.dart';
 import 'package:pica_comic/network/htmanga_network/htmanga_main_network.dart';
 import 'package:pica_comic/network/jm_network/jm_models.dart';
 import 'package:pica_comic/network/nhentai_network/nhentai_main_network.dart';
+import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/pages/comic_page.dart';
 import 'package:pica_comic/tools/keep_screen_on.dart';
@@ -209,10 +210,8 @@ class ComicReadingPage extends StatelessWidget {
           DeviceOrientation.landscapeRight
         ]);
       } else if (appdata.settings[76] == "2") {
-        SystemChrome.setPreferredOrientations([
-          DeviceOrientation.portraitUp,
-          DeviceOrientation.portraitDown
-        ]);
+        SystemChrome.setPreferredOrientations(
+            [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
       }
       //进入阅读器时清除内存中的缓存, 并且增大限制
       BaseImageProvider.clearCache();
@@ -240,7 +239,8 @@ class ComicReadingPage extends StatelessWidget {
       ComicImage.clear();
       StateController.remove<ComicReadingPageLogic>();
       // 更新本地收藏
-      LocalFavoritesManager().onReadEnd(readingData.favoriteId, readingData.favoriteType);
+      LocalFavoritesManager()
+          .onReadEnd(readingData.favoriteId, readingData.favoriteType);
       // 保存历史记录
       if (history != null) {
         _updateHistory(logic, true);
