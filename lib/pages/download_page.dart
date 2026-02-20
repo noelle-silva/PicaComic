@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:pica_comic/base.dart';
 import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/foundation/history.dart';
+import 'package:pica_comic/foundation/log.dart';
 import 'package:pica_comic/network/app_dio.dart';
 import 'package:pica_comic/network/base_comic.dart';
 import 'package:pica_comic/network/custom_download_model.dart';
@@ -30,6 +31,7 @@ import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/foundation/local_favorites.dart';
 import 'package:pica_comic/network/eh_network/eh_download_model.dart';
 import 'package:pica_comic/network/jm_network/jm_download.dart';
+import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/network/picacg_network/picacg_download_model.dart';
 import 'dart:io';
 import 'package:pica_comic/tools/translations.dart';
@@ -303,6 +305,48 @@ class DownloadPage extends StatelessWidget {
     }
   }
 
+  Future<void> uploadSelectedToServer(DownloadPageLogic logic) async {
+    if (!PicaServer.instance.enabled) {
+      showToast(message: "未配置服务器".tl);
+      return;
+    }
+
+    final targets = <DownloadedItem>[];
+    for (int i = 0; i < logic.selected.length; i++) {
+      if (logic.selected[i]) {
+        targets.add(logic.comics[i]);
+      }
+    }
+    if (targets.isEmpty) return;
+
+    var dialog = showLoadingDialog(
+      App.globalContext!,
+      barrierDismissible: false,
+      allowCancel: false,
+      message: "上传中".tl,
+    );
+
+    int ok = 0;
+    int fail = 0;
+    for (final comic in targets) {
+      try {
+        await PicaServer.instance.uploadDownloadedComic(comic);
+        ok++;
+      } catch (e) {
+        fail++;
+        LogManager.addLog(LogLevel.error, "PicaServer", "upload failed: ${comic.id}\n$e");
+      }
+    }
+
+    dialog.close();
+    showToast(
+      message: "上传完成: @a 成功, @b 失败".tlParams({
+        "a": ok.toString(),
+        "b": fail.toString(),
+      }),
+    );
+  }
+
   void downloadFont() async {
     bool canceled = false;
     var cancelToken = CancelToken();
@@ -425,6 +469,16 @@ class DownloadPage extends StatelessWidget {
                 text: "阅读".tl,
                 onClick: () {
                   logic.comics[index].read();
+                },
+              ),
+              DesktopMenuEntry(
+                text: "上传到服务器".tl,
+                onClick: () {
+                  Future.delayed(const Duration(milliseconds: 300), () async {
+                    logic.selected = List.generate(logic.comics.length, (_) => false);
+                    logic.selected[index] = true;
+                    await uploadSelectedToServer(logic);
+                  });
                 },
               ),
               DesktopMenuEntry(
@@ -732,6 +786,13 @@ class DownloadPage extends StatelessWidget {
                       onTap: () => exportSelectedComic(context, logic),
                     ),
                     PopupMenuItem(
+                      child: Text("上传到服务器".tl),
+                      onTap: () => Future.delayed(
+                        const Duration(milliseconds: 200),
+                        () => uploadSelectedToServer(logic),
+                      ),
+                    ),
+                    PopupMenuItem(
                       child: Text("导出为pdf".tl),
                       onTap: () => exportAsPdf(null, logic),
                     ),
@@ -1034,6 +1095,34 @@ class _DownloadedComicInfoViewState extends State<DownloadedComicInfoView> {
                           _toComicInfoPage(widget.item);
                         },
                         child: Text("查看详情".tl)),
+                  ),
+                  const SizedBox(
+                    width: 16,
+                  ),
+                  Expanded(
+                    child: FilledButton.tonal(
+                      onPressed: () async {
+                        if (!PicaServer.instance.enabled) {
+                          showToast(message: "未配置服务器".tl);
+                          return;
+                        }
+                        var dialog = showLoadingDialog(
+                          context,
+                          barrierDismissible: false,
+                          allowCancel: false,
+                          message: "上传中".tl,
+                        );
+                        try {
+                          await PicaServer.instance.uploadDownloadedComic(comic);
+                          dialog.close();
+                          showToast(message: "上传完成".tl);
+                        } catch (e) {
+                          dialog.close();
+                          showToast(message: "${"上传失败".tl}: $e");
+                        }
+                      },
+                      child: Text("上传服务器".tl),
+                    ),
                   ),
                   const SizedBox(
                     width: 16,

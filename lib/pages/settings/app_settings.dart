@@ -721,12 +721,173 @@ void syncDataSettings(BuildContext context) {
   );
 }
 
+void serverSettings(BuildContext context) {
+  String url = (appdata.settings.elementAtOrNull(90) ?? "").trim();
+  String apiKey = (appdata.implicitData.elementAtOrNull(4) ?? "").trim();
+
+  int action = 0;
+
+  String normalizeUrl(String input) {
+    var v = input.trim();
+    while (v.endsWith('/')) {
+      v = v.substring(0, v.length - 1);
+    }
+    return v;
+  }
+
+  Future<bool> test() async {
+    final base = normalizeUrl(url);
+    if (base.isEmpty) return false;
+    try {
+      final dio = Dio(BaseOptions(
+        baseUrl: base,
+        connectTimeout: const Duration(seconds: 8),
+        receiveTimeout: const Duration(seconds: 8),
+        headers: apiKey.isEmpty ? null : {'X-Api-Key': apiKey},
+      ));
+      final res = await dio.get('/api/v1/health');
+      if (res.statusCode != 200) return false;
+      if (res.data is Map) {
+        return (res.data['ok'] == true);
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  showDialog(
+    context: context,
+    useSafeArea: false,
+    builder: (context) => ContentDialog(
+      title: "私有服务器".tl,
+      content: Column(
+        children: [
+          TextField(
+            onChanged: (s) => url = s.trim(),
+            controller: TextEditingController(text: url),
+            decoration: InputDecoration(
+              border: const OutlineInputBorder(),
+              label: Text("URL".tl),
+              hintText: "http://192.168.1.10:8080".tl,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            onChanged: (s) => apiKey = s.trim(),
+            controller: TextEditingController(text: apiKey),
+            obscureText: true,
+            decoration: InputDecoration(
+              border: const OutlineInputBorder(),
+              label: Text("API Key".tl),
+            ),
+          ),
+          const SizedBox(height: 8),
+          StatefulBuilder(
+            builder: (context, setState) {
+              return Row(
+                children: [
+                  Text("立即执行:".tl),
+                  Radio<int>(
+                    value: 0,
+                    groupValue: action,
+                    onChanged: (v) => setState(() => action = v ?? 0),
+                  ),
+                  Text("仅保存".tl),
+                  Radio<int>(
+                    value: 1,
+                    groupValue: action,
+                    onChanged: (v) => setState(() => action = v ?? 1),
+                  ),
+                  Text("上传用户数据".tl),
+                  Radio<int>(
+                    value: 2,
+                    groupValue: action,
+                    onChanged: (v) => setState(() => action = v ?? 2),
+                  ),
+                  Text("下载用户数据".tl),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              FilledButton.tonal(
+                onPressed: () async {
+                  var dialog = showLoadingDialog(
+                    context,
+                    allowCancel: false,
+                    barrierDismissible: false,
+                    message: "测试连接中".tl,
+                  );
+                  final ok = await test();
+                  dialog.close();
+                  showToast(message: ok ? "连接成功".tl : "连接失败".tl);
+                },
+                child: Text("测试".tl),
+              ),
+              const SizedBox(width: 12),
+              FilledButton(
+                onPressed: () async {
+                  final normalizedUrl = normalizeUrl(url);
+                  appdata.settings[90] = normalizedUrl;
+                  if (appdata.implicitData.length >= 5) {
+                    appdata.implicitData[4] = apiKey;
+                  }
+                  appdata.updateSettings(false);
+                  appdata.writeImplicitData();
+
+                  if (normalizedUrl.isEmpty || action == 0) {
+                    App.globalBack();
+                    return;
+                  }
+
+                  var dialog = showLoadingDialog(
+                    context,
+                    allowCancel: false,
+                    barrierDismissible: false,
+                  );
+                  try {
+                    if (action == 1) {
+                      await PicaServer.instance.uploadUserData();
+                      dialog.close();
+                      showToast(message: "上传完成".tl);
+                      App.globalBack();
+                    } else {
+                      await PicaServer.instance.downloadUserDataAndImport();
+                      dialog.close();
+                      showToast(message: "下载完成".tl);
+                      App.globalBack();
+                    }
+                  } catch (e) {
+                    dialog.close();
+                    showToast(message: "${"操作失败".tl}: $e");
+                  }
+                },
+                child: Text("提交".tl),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            "提示: URL 留空将禁用服务器功能; API Key 不会随 WebDAV 同步".tl,
+            style: const TextStyle(fontSize: 12),
+          ),
+        ],
+      ).paddingHorizontal(12),
+    ),
+  );
+}
+
 void setCacheLimit() {
   int size = appdata.appSettings.cacheLimit;
   const minSize = 16;
   bool isValid = true;
   final FocusNode focusNode = FocusNode();
-  final TextEditingController controller = TextEditingController(text: size.toString());
+  final TextEditingController controller =
+      TextEditingController(text: size.toString());
   showDialog(
     context: App.globalContext!,
     useSafeArea: false,
@@ -750,7 +911,8 @@ void setCacheLimit() {
                 },
                 decoration: InputDecoration(
                   border: OutlineInputBorder(
-                    borderSide: BorderSide(color: isValid ? Colors.grey : Colors.red),
+                    borderSide:
+                        BorderSide(color: isValid ? Colors.grey : Colors.red),
                   ),
                   suffix: const Text("MB"),
                   errorText: isValid ? null : "${"不能小于".tl} $minSize MB",

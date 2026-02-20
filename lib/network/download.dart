@@ -583,6 +583,15 @@ DownloadedItem? _getComicFromJson(String id, String json, DateTime time, [String
   }
 }
 
+DownloadedItem? getDownloadedComicFromJson(
+  String id,
+  String json,
+  DateTime time, [
+  String? directory,
+]) {
+  return _getComicFromJson(id, json, time, directory);
+}
+
 abstract mixin class _DownloadDb {
   Database? get _db;
 
@@ -692,5 +701,13 @@ abstract mixin class _DownloadDb {
 
   String _findAccurateDirectory(String directory) {
     return sanitizeFileName(directory);
+  }
+}
+
+extension DownloadImportExt on DownloadManager {
+  void upsertDownloadedItem(DownloadedItem item, String directory, [DateTime? time]) {
+    item.directory = directory;
+    _DownloadDb._cache[item.id] = directory;
+    _addToDb(item, directory, time);
   }
 }

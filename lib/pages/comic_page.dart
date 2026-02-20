@@ -19,6 +19,7 @@ import 'package:pica_comic/foundation/stack.dart' as stack;
 import 'package:pica_comic/foundation/ui_mode.dart';
 import 'package:pica_comic/network/base_comic.dart';
 import 'package:pica_comic/network/download.dart';
+import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/pages/favorites/local_favorites.dart';
 import 'package:pica_comic/pages/reader/comic_reading_page.dart';
@@ -1249,6 +1250,32 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                 }
               }),
               if (width >= 500) buildItem("下载".tl, Icons.download, download),
+              if (downloadManager.isExists(downloadedId))
+                buildItem("上传服务器".tl, Icons.cloud_upload, () async {
+                  if (!PicaServer.instance.enabled) {
+                    showToast(message: "未配置服务器".tl);
+                    return;
+                  }
+                  final item = await downloadManager.getComicOrNull(downloadedId);
+                  if (item == null) {
+                    showToast(message: "未找到本地下载".tl);
+                    return;
+                  }
+                  var dialog = showLoadingDialog(
+                    App.globalContext!,
+                    barrierDismissible: false,
+                    allowCancel: false,
+                    message: "上传中".tl,
+                  );
+                  try {
+                    await PicaServer.instance.uploadDownloadedComic(item);
+                    dialog.close();
+                    showToast(message: "上传完成".tl);
+                  } catch (e) {
+                    dialog.close();
+                    showToast(message: "${"上传失败".tl}: $e");
+                  }
+                }),
               if (onLike != null)
                 buildItem(likeCount ?? "喜欢".tl,
                     isLiked ? Icons.favorite : Icons.favorite_border, onLike!),

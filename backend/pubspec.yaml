@@ -1,0 +1,18 @@
+name: pica_server
+description: Minimal private server for PicaComic (single-user).
+version: 0.1.0
+publish_to: "none"
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+  sqlite3: ^2.4.6
+  path: ^1.9.0
+  crypto: ^3.0.3
+  mime: ^1.0.5
+
+dev_dependencies:
+  lints: ^3.0.0

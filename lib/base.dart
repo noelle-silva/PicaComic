@@ -119,6 +119,7 @@ class Appdata {
     "gold-usergeneratedcontent.net", //87 hitomi cdn url
     "0", //88 jm auto checkin
     "2.0.11", //89 jm app version
+    "", //90 private server url
   ];
 
   /// 隐式数据, 用于存储一些不需要用户设置的数据, 此数据通常为某些组件的状态, 此设置不应当被同步
@@ -127,6 +128,7 @@ class Appdata {
     "0", // 双页模式下第一页显示单页
     "0", // 点击关闭按钮时不显示提示
     webUA, // UA
+    "", // private server api key
   ];
 
   void writeImplicitData() async {
