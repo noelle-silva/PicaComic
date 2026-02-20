@@ -21,6 +21,7 @@ import '../../network/hitomi_network/hitomi_main_network.dart';
 import '../../network/htmanga_network/htmanga_main_network.dart';
 import '../../network/jm_network/jm_network.dart';
 import '../../network/nhentai_network/nhentai_main_network.dart';
+import '../../network/pica_server.dart';
 import '../../network/picacg_network/methods.dart';
 import '../../tools/io_tools.dart';
 
@@ -270,9 +271,7 @@ class RenameFolderDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final controller = TextEditingController(
-      text: before
-    );
+    final controller = TextEditingController(text: before);
     final FocusNode focusNode = FocusNode();
     focusNode.requestFocus();
     return SimpleDialog(
@@ -459,6 +458,18 @@ class LocalFavoriteTile extends ComicTile {
 
   @override
   void onSecondaryTap_(TapDownDetails details) {
+    String? toServerSource() {
+      return switch (comic.type.comicType) {
+        ComicType.picacg => 'picacg',
+        ComicType.ehentai => 'ehentai',
+        ComicType.jm => 'jm',
+        ComicType.hitomi => 'hitomi',
+        ComicType.htManga => 'htmanga',
+        ComicType.nhentai => 'nhentai',
+        _ => null,
+      };
+    }
+
     showDesktopMenu(
       App.globalContext!,
       Offset(details.globalPosition.dx, details.globalPosition.dy),
@@ -510,6 +521,25 @@ class LocalFavoriteTile extends ComicTile {
             showToast(message: "已添加下载任务".tl);
           },
         ),
+        if (PicaServer.instance.enabled && toServerSource() != null)
+          DesktopMenuEntry(
+            text: "在服务器下载".tl,
+            onClick: () async {
+              if (!PicaServer.instance.enabled) {
+                showToast(message: "未配置服务器".tl);
+                return;
+              }
+              try {
+                final taskId = await PicaServer.instance.createDownloadTask(
+                  source: toServerSource()!,
+                  target: comic.target,
+                );
+                showToast(message: "${"已创建任务".tl}: $taskId");
+              } catch (e) {
+                showToast(message: "${"创建任务失败".tl}: $e");
+              }
+            },
+          ),
         DesktopMenuEntry(
           text: "更新漫画信息".tl,
           onClick: () {
@@ -530,6 +560,18 @@ class LocalFavoriteTile extends ComicTile {
   }
 
   void showMenu() {
+    String? toServerSource() {
+      return switch (comic.type.comicType) {
+        ComicType.picacg => 'picacg',
+        ComicType.ehentai => 'ehentai',
+        ComicType.jm => 'jm',
+        ComicType.hitomi => 'hitomi',
+        ComicType.htManga => 'htmanga',
+        ComicType.nhentai => 'nhentai',
+        _ => null,
+      };
+    }
+
     showDialog(
         context: App.globalContext!,
         builder: (context) => Dialog(
@@ -597,6 +639,35 @@ class LocalFavoriteTile extends ComicTile {
                         showToast(message: "已添加下载任务".tl);
                       },
                     ),
+                    if (PicaServer.instance.enabled && toServerSource() != null)
+                      ListTile(
+                        leading: const Icon(Icons.cloud_download_outlined),
+                        title: Text("在服务器下载".tl),
+                        onTap: () async {
+                          App.globalBack();
+                          if (!PicaServer.instance.enabled) {
+                            showToast(message: "未配置服务器".tl);
+                            return;
+                          }
+                          final serverSource = toServerSource()!;
+                          final dialog = showLoadingDialog(
+                            App.globalContext!,
+                            barrierDismissible: false,
+                            allowCancel: false,
+                            message: "创建任务中".tl,
+                          );
+                          try {
+                            final taskId = await PicaServer.instance
+                                .createDownloadTask(
+                                    source: serverSource, target: comic.target);
+                            dialog.close();
+                            showToast(message: "${"已创建任务".tl}: $taskId");
+                          } catch (e) {
+                            dialog.close();
+                            showToast(message: "${"创建任务失败".tl}: $e");
+                          }
+                        },
+                      ),
                     ListTile(
                       leading: const Icon(Icons.update),
                       title: Text("更新漫画信息".tl),

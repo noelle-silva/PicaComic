@@ -4,6 +4,8 @@ import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/foundation/history.dart';
 import 'package:pica_comic/foundation/image_loader/cached_image.dart';
 import 'package:pica_comic/network/download.dart';
+import 'package:pica_comic/network/pica_server.dart';
+import 'package:pica_comic/network/pica_server_auth_sync.dart';
 import 'accounts_page.dart';
 import 'package:pica_comic/pages/download_page.dart';
 import 'favorites/server_favorites.dart';
@@ -54,6 +56,10 @@ class MePage extends StatelessWidget {
                             const SizedBox(
                               height: 12,
                             ),
+                            buildServerAuthSync(context, width),
+                            const SizedBox(
+                              height: 12,
+                            ),
                             buildServerFavorites(context, width),
                           ],
                         ),
@@ -90,6 +96,10 @@ class MePage extends StatelessWidget {
                     height: 12,
                   ),
                   buildServerLibrary(context, width),
+                  const SizedBox(
+                    height: 12,
+                  ),
+                  buildServerAuthSync(context, width),
                   const SizedBox(
                     height: 12,
                   ),
@@ -223,6 +233,44 @@ class MePage extends StatelessWidget {
       title: "服务器漫画库".tl,
       description: "查看并下载服务器上的漫画".tl,
       onTap: () => context.to(() => const ServerLibraryPage()),
+    );
+  }
+
+  Widget buildServerAuthSync(BuildContext context, double width) {
+    return _MePageCard(
+      icon: const Icon(Icons.cloud_sync_outlined),
+      title: "同步登录态到服务器".tl,
+      description: "把本地登录态更新到服务器（明文）".tl,
+      onTap: () async {
+        if (!PicaServer.instance.enabled) {
+          showToast(message: "未配置服务器".tl);
+          return;
+        }
+
+        final dialog = showLoadingDialog(
+          context,
+          barrierDismissible: false,
+          allowCancel: false,
+          message: "同步中".tl,
+        );
+        try {
+          final result = await PicaServerAuthSync.syncAll();
+          dialog.close();
+
+          final failed = result.statusBySource.entries
+              .where((e) => e.value.startsWith('failed'))
+              .map((e) => e.key)
+              .toList();
+          if (failed.isEmpty) {
+            showToast(message: "同步完成".tl);
+          } else {
+            showToast(message: "${"同步失败".tl}: ${failed.join(', ')}");
+          }
+        } catch (e) {
+          dialog.close();
+          showToast(message: e.toString());
+        }
+      },
     );
   }
 

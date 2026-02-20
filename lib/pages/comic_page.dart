@@ -1204,6 +1204,10 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
               Text(
                 title,
                 style: const TextStyle(fontSize: 12),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                softWrap: false,
+                textAlign: TextAlign.center,
               )
             ],
           ),
@@ -1351,6 +1355,49 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                     showToast(message: e.toString());
                   }
                 }),
+              if (PicaServer.instance.enabled)
+                () {
+                  String? toServerSource(String sourceKey) {
+                    return switch (sourceKey) {
+                      'picacg' => 'picacg',
+                      'ehentai' => 'ehentai',
+                      'jm' => 'jm',
+                      'hitomi' => 'hitomi',
+                      'htmanga' => 'htmanga',
+                      'nhentai' => 'nhentai',
+                      _ => null,
+                    };
+                  }
+
+                  final serverSource = toServerSource(sourceKey);
+                  if (serverSource == null) return const SizedBox.shrink();
+                  return buildItem(
+                    "在服务器下载".tl,
+                    Icons.cloud_download_outlined,
+                    () async {
+                      if (!PicaServer.instance.enabled) {
+                        showToast(message: "未配置服务器".tl);
+                        return;
+                      }
+                      final dialog = showLoadingDialog(
+                        App.globalContext!,
+                        barrierDismissible: false,
+                        allowCancel: false,
+                        message: "创建任务中".tl,
+                      );
+                      try {
+                        final taskId = await PicaServer.instance
+                            .createDownloadTask(
+                                source: serverSource, target: id);
+                        dialog.close();
+                        showToast(message: "${"已创建任务".tl}: $taskId");
+                      } catch (e) {
+                        dialog.close();
+                        showToast(message: "${"创建任务失败".tl}: $e");
+                      }
+                    },
+                  );
+                }(),
               if (width >= 500) buildItem("下载".tl, Icons.download, download),
               if (downloadManager.isExists(downloadedId))
                 buildItem("上传服务器".tl, Icons.cloud_upload, () async {

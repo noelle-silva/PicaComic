@@ -148,6 +148,82 @@ class PicaServer {
     await dio.post('/api/v1/comics', data: form);
   }
 
+  Future<void> putAuthSession(String source, Map<String, dynamic> data) async {
+    final dio = _dio();
+    await dio.put('/api/v1/auth/${Uri.encodeComponent(source)}', data: data);
+  }
+
+  Future<Map<String, dynamic>> getAuthSessionInfo(String source) async {
+    final dio = _dio();
+    final res = await dio.get('/api/v1/auth/${Uri.encodeComponent(source)}');
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    return Map<String, dynamic>.from(data);
+  }
+
+  Future<String> createDownloadTask({
+    required String source,
+    required String target,
+    List<int>? eps,
+  }) async {
+    final dio = _dio();
+    final payload = <String, dynamic>{
+      'source': source,
+      'target': target,
+      if (eps != null) 'eps': eps,
+    };
+    final res = await dio.post('/api/v1/tasks/download', data: payload);
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      throw Exception((data['error'] ?? 'request failed').toString());
+    }
+    final taskId = (data['taskId'] ?? '').toString();
+    if (taskId.isEmpty) throw Exception('missing taskId');
+    return taskId;
+  }
+
+  Future<List<ServerTask>> listTasks({int limit = 50}) async {
+    final dio = _dio();
+    final n = limit.clamp(1, 200).toInt();
+    final res = await dio.get(
+      '/api/v1/tasks',
+      queryParameters: {'limit': n},
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      throw Exception((data['error'] ?? 'request failed').toString());
+    }
+    final list = data['tasks'];
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((e) => ServerTask.fromMap(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  Future<ServerTask> getTaskDetail(String id) async {
+    final dio = _dio();
+    final res = await dio.get('/api/v1/tasks/${Uri.encodeComponent(id)}');
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      throw Exception((data['error'] ?? 'request failed').toString());
+    }
+    final task = data['task'];
+    if (task is! Map) throw Exception('invalid response');
+    return ServerTask.fromMap(Map<String, dynamic>.from(task));
+  }
+
+  Future<Map<String, dynamic>> getTask(String id) async {
+    final task = await getTaskDetail(id);
+    return {
+      'ok': true,
+      'task': task.toMap(),
+    };
+  }
+
   Future<File> downloadComicZip(String id, String outPath) async {
     final dio = _dio();
     if (File(outPath).existsSync()) {
@@ -487,6 +563,68 @@ class ServerFavoriteItem {
         'subtitle': subtitle,
         'cover': cover,
         'tags': tags,
+      };
+}
+
+class ServerTask {
+  final String id;
+  final String type;
+  final String source;
+  final String target;
+  final String status;
+  final int progress;
+  final int total;
+  final String? message;
+  final String? comicId;
+  final int? createdAt;
+  final int? updatedAt;
+  final Map<String, dynamic>? params;
+
+  const ServerTask({
+    required this.id,
+    required this.type,
+    required this.source,
+    required this.target,
+    required this.status,
+    required this.progress,
+    required this.total,
+    this.message,
+    this.comicId,
+    this.createdAt,
+    this.updatedAt,
+    this.params,
+  });
+
+  factory ServerTask.fromMap(Map<String, dynamic> map) {
+    return ServerTask(
+      id: (map['id'] ?? '').toString(),
+      type: (map['type'] ?? '').toString(),
+      source: (map['source'] ?? '').toString(),
+      target: (map['target'] ?? '').toString(),
+      status: (map['status'] ?? '').toString(),
+      progress: int.tryParse((map['progress'] ?? '').toString()) ?? 0,
+      total: int.tryParse((map['total'] ?? '').toString()) ?? 0,
+      message: map['message']?.toString(),
+      comicId: map['comicId']?.toString(),
+      createdAt: int.tryParse((map['createdAt'] ?? '').toString()),
+      updatedAt: int.tryParse((map['updatedAt'] ?? '').toString()),
+      params: map['params'] is Map ? Map<String, dynamic>.from(map['params']) : null,
+    );
+  }
+
+  Map<String, dynamic> toMap() => {
+        'id': id,
+        'type': type,
+        'source': source,
+        'target': target,
+        'status': status,
+        'progress': progress,
+        'total': total,
+        'message': message,
+        'comicId': comicId,
+        'createdAt': createdAt,
+        'updatedAt': updatedAt,
+        'params': params,
       };
 }
 

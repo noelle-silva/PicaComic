@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/network/base_comic.dart';
+import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'package:pica_comic/components/components.dart';
@@ -40,7 +41,49 @@ class _NormalFavoritePage extends ComicsPage<BaseComic> {
 
   @override
   List<ComicTileMenuOption>? get addonMenuOptions {
+    String? toServerSource(String sourceKey) {
+      return switch (sourceKey) {
+        'picacg' => 'picacg',
+        'ehentai' => 'ehentai',
+        'jm' => 'jm',
+        'hitomi' => 'hitomi',
+        'htmanga' => 'htmanga',
+        'nhentai' => 'nhentai',
+        _ => null,
+      };
+    }
+
+    final serverSource = toServerSource(data.key);
     return [
+      if (PicaServer.instance.enabled && serverSource != null)
+        ComicTileMenuOption(
+          "在服务器下载".tl,
+          Icons.cloud_download_outlined,
+          (id) {
+            if (id == null) return;
+            Future.delayed(const Duration(milliseconds: 200), () async {
+              if (!PicaServer.instance.enabled) {
+                showToast(message: "未配置服务器".tl);
+                return;
+              }
+              final dialog = showLoadingDialog(
+                App.globalContext!,
+                barrierDismissible: false,
+                allowCancel: false,
+                message: "创建任务中".tl,
+              );
+              try {
+                final taskId = await PicaServer.instance
+                    .createDownloadTask(source: serverSource, target: id);
+                dialog.close();
+                showToast(message: "${"已创建任务".tl}: $taskId");
+              } catch (e) {
+                dialog.close();
+                showToast(message: "${"创建任务失败".tl}: $e");
+              }
+            });
+          },
+        ),
       if (data.addOrDelFavorite != null)
         ComicTileMenuOption(
           "取消收藏".tl,
@@ -105,7 +148,10 @@ class _MultiFolderFavoritesPageState extends State<_MultiFolderFavoritesPage> {
         child: CircularProgressIndicator(),
       );
     } else if (_errorMessage != null) {
-      return NetworkError(message: _errorMessage!, withAppbar: false,);
+      return NetworkError(
+        message: _errorMessage!,
+        withAppbar: false,
+      );
     } else {
       var length = folders!.length;
       if (widget.data.allFavoritesId != null) length++;
