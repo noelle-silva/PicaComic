@@ -189,6 +189,119 @@ class PicaServer {
     final dio = _dio();
     await dio.delete('/api/v1/comics/${Uri.encodeComponent(id)}');
   }
+
+  Future<List<ServerFavoriteFolder>> listFavoriteFolders() async {
+    final dio = _dio();
+    final res = await dio.get('/api/v1/favorites/folders');
+    final data = res.data;
+    if (data is! Map) return const [];
+    final list = data['folders'];
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((e) => ServerFavoriteFolder.fromMap(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  Future<void> createFavoriteFolder(String name) async {
+    final dio = _dio();
+    await dio.post('/api/v1/favorites/folders', data: {'name': name});
+  }
+
+  Future<void> renameFavoriteFolder(String from, String to) async {
+    final dio = _dio();
+    await dio.patch('/api/v1/favorites/folders/rename', data: {
+      'from': from,
+      'to': to,
+    });
+  }
+
+  Future<void> reorderFavoriteFolders(List<String> names) async {
+    final dio = _dio();
+    await dio.patch('/api/v1/favorites/folders/order', data: {'names': names});
+  }
+
+  Future<void> deleteFavoriteFolder(String name,
+      {required String moveTo}) async {
+    final dio = _dio();
+    await dio.delete(
+      '/api/v1/favorites/folders/${Uri.encodeComponent(name)}',
+      queryParameters: {'moveTo': moveTo},
+    );
+  }
+
+  Future<List<ServerFavoriteItem>> listFavorites(String folder) async {
+    final dio = _dio();
+    final res = await dio.get(
+      '/api/v1/favorites',
+      queryParameters: {'folder': folder},
+    );
+    final data = res.data;
+    if (data is! Map) return const [];
+    final list = data['favorites'];
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((e) => ServerFavoriteItem.fromMap(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  Future<ServerFavoriteContains> containsFavorite({
+    required String sourceKey,
+    required String target,
+  }) async {
+    final dio = _dio();
+    final res = await dio.get(
+      '/api/v1/favorites/contains',
+      queryParameters: {'sourceKey': sourceKey, 'target': target},
+    );
+    final data = res.data;
+    if (data is! Map) {
+      return const ServerFavoriteContains(exists: false, folder: null);
+    }
+    return ServerFavoriteContains(
+      exists: data['exists'] == true,
+      folder: data['folder']?.toString(),
+    );
+  }
+
+  Future<void> addFavorite(ServerFavoriteItem item) async {
+    final dio = _dio();
+    await dio.post('/api/v1/favorites', data: item.toCreateMap());
+  }
+
+  Future<void> removeFavorite({
+    required String sourceKey,
+    required String target,
+  }) async {
+    final dio = _dio();
+    await dio.delete('/api/v1/favorites', data: {
+      'sourceKey': sourceKey,
+      'target': target,
+    });
+  }
+
+  Future<void> moveFavorites({
+    required String folder,
+    required List<ServerFavoriteKey> items,
+  }) async {
+    final dio = _dio();
+    await dio.patch('/api/v1/favorites/move', data: {
+      'folder': folder,
+      'items': items.map((e) => e.toMap()).toList(),
+    });
+  }
+
+  Future<void> reorderFavorites({
+    required String folder,
+    required List<ServerFavoriteKey> items,
+  }) async {
+    final dio = _dio();
+    await dio.patch('/api/v1/favorites/order', data: {
+      'folder': folder,
+      'items': items.map((e) => e.toMap()).toList(),
+    });
+  }
 }
 
 class ServerReadInfo {
@@ -286,6 +399,95 @@ class ServerComic {
       return null;
     }
   }
+}
+
+class ServerFavoriteFolder {
+  final String name;
+  final int? orderValue;
+
+  const ServerFavoriteFolder({required this.name, this.orderValue});
+
+  factory ServerFavoriteFolder.fromMap(Map<String, dynamic> map) {
+    return ServerFavoriteFolder(
+      name: (map['name'] ?? '').toString(),
+      orderValue: int.tryParse((map['orderValue'] ?? '').toString()),
+    );
+  }
+}
+
+class ServerFavoriteKey {
+  final String sourceKey;
+  final String target;
+
+  const ServerFavoriteKey({required this.sourceKey, required this.target});
+
+  Map<String, dynamic> toMap() => {
+        'sourceKey': sourceKey,
+        'target': target,
+      };
+}
+
+class ServerFavoriteContains {
+  final bool exists;
+  final String? folder;
+
+  const ServerFavoriteContains({required this.exists, required this.folder});
+}
+
+class ServerFavoriteItem {
+  final String sourceKey;
+  final String target;
+  final String folder;
+  final String title;
+  final String subtitle;
+  final String cover;
+  final List<String> tags;
+  final int? orderValue;
+  final int? addedAt;
+  final int? updatedAt;
+
+  const ServerFavoriteItem({
+    required this.sourceKey,
+    required this.target,
+    required this.folder,
+    required this.title,
+    required this.subtitle,
+    required this.cover,
+    required this.tags,
+    this.orderValue,
+    this.addedAt,
+    this.updatedAt,
+  });
+
+  factory ServerFavoriteItem.fromMap(Map<String, dynamic> map) {
+    return ServerFavoriteItem(
+      sourceKey: (map['sourceKey'] ?? '').toString(),
+      target: (map['target'] ?? '').toString(),
+      folder: (map['folder'] ?? '').toString(),
+      title: (map['title'] ?? '').toString(),
+      subtitle: (map['subtitle'] ?? '').toString(),
+      cover: (map['cover'] ?? '').toString(),
+      tags: (map['tags'] is List)
+          ? List<String>.from((map['tags'] as List).map((e) => e.toString()))
+          : const [],
+      orderValue: int.tryParse((map['orderValue'] ?? '').toString()),
+      addedAt: int.tryParse((map['addedAt'] ?? '').toString()),
+      updatedAt: int.tryParse((map['updatedAt'] ?? '').toString()),
+    );
+  }
+
+  ServerFavoriteKey get key =>
+      ServerFavoriteKey(sourceKey: sourceKey, target: target);
+
+  Map<String, dynamic> toCreateMap() => {
+        'sourceKey': sourceKey,
+        'target': target,
+        'folder': folder,
+        'title': title,
+        'subtitle': subtitle,
+        'cover': cover,
+        'tags': tags,
+      };
 }
 
 Future<void> _zipDirectory(Directory sourceDir, String outZipPath) async {

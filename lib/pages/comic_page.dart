@@ -1249,6 +1249,108 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                   showToast(message: "已收藏".tl);
                 }
               }),
+              if (PicaServer.instance.enabled)
+                buildItem("服务器收藏".tl, Icons.cloud, () async {
+                  try {
+                    final folders0 =
+                        await PicaServer.instance.listFavoriteFolders();
+                    final folders = folders0
+                        .map((e) => e.name)
+                        .where((e) => e.trim().isNotEmpty)
+                        .toList();
+                    String? picked = await showDialog<String>(
+                      context: context,
+                      builder: (context) {
+                        return SimpleDialog(
+                          title: Text("选择收藏夹".tl),
+                          children: [
+                            for (final name in folders)
+                              ListTile(
+                                title: Text(name),
+                                onTap: () => Navigator.of(context).pop(name),
+                              ),
+                            ListTile(
+                              leading:
+                                  const Icon(Icons.create_new_folder_outlined),
+                              title: Text("创建收藏夹".tl),
+                              onTap: () =>
+                                  Navigator.of(context).pop('__create__'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+
+                    if (picked == null) return;
+
+                    if (picked == '__create__') {
+                      final controller = TextEditingController();
+                      final focusNode = FocusNode()..requestFocus();
+                      final newName = await showDialog<String>(
+                        context: context,
+                        builder: (context) {
+                          return SimpleDialog(
+                            title: Text("创建收藏夹".tl),
+                            children: [
+                              Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(20, 0, 20, 0),
+                                child: TextField(
+                                  controller: controller,
+                                  focusNode: focusNode,
+                                  decoration: InputDecoration(
+                                    border: const OutlineInputBorder(),
+                                    labelText: "名称".tl,
+                                  ),
+                                  onEditingComplete: () {
+                                    final v = controller.text.trim();
+                                    Navigator.of(context)
+                                        .pop(v.isEmpty ? null : v);
+                                  },
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                height: 40,
+                                child: Center(
+                                  child: FilledButton(
+                                    onPressed: () {
+                                      final v = controller.text.trim();
+                                      Navigator.of(context)
+                                          .pop(v.isEmpty ? null : v);
+                                    },
+                                    child: Text("提交".tl),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      );
+                      focusNode.dispose();
+                      controller.dispose();
+                      if (newName == null) return;
+                      await PicaServer.instance.createFavoriteFolder(newName);
+                      picked = newName;
+                    }
+
+                    final local = toLocalFavoriteItem();
+                    await PicaServer.instance.addFavorite(
+                      ServerFavoriteItem(
+                        sourceKey: sourceKey,
+                        target: id,
+                        folder: picked,
+                        title: local.name,
+                        subtitle: local.author,
+                        cover: local.coverPath,
+                        tags: local.tags,
+                      ),
+                    );
+                    showToast(message: "已收藏到服务器".tl);
+                  } catch (e) {
+                    showToast(message: e.toString());
+                  }
+                }),
               if (width >= 500) buildItem("下载".tl, Icons.download, download),
               if (downloadManager.isExists(downloadedId))
                 buildItem("上传服务器".tl, Icons.cloud_upload, () async {
@@ -1256,7 +1358,8 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                     showToast(message: "未配置服务器".tl);
                     return;
                   }
-                  final item = await downloadManager.getComicOrNull(downloadedId);
+                  final item =
+                      await downloadManager.getComicOrNull(downloadedId);
                   if (item == null) {
                     showToast(message: "未找到本地下载".tl);
                     return;

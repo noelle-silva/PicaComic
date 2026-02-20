@@ -22,6 +22,41 @@ Handler buildHandler({
 
   final extracting = <String, Future<void>>{};
 
+  const defaultFavoriteFolder = '默认';
+
+  bool isValidFolderName(String name) {
+    final v = name.trim();
+    if (v.isEmpty) return false;
+    if (v.length > 64) return false;
+    if (v.contains('/') || v.contains('\\')) return false;
+    if (v.contains('..')) return false;
+    return true;
+  }
+
+  void ensureFavoriteFolder(String name) {
+    final v = name.trim();
+    if (!isValidFolderName(v)) return;
+    final row = db.select(
+      'select name from favorite_folders where name = ?',
+      [v],
+    ).firstOrNull;
+    if (row != null) return;
+    final maxOrder = db
+        .select(
+            'select coalesce(max(order_value), 0) as m from favorite_folders')
+        .first['m'] as int;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      insert into favorite_folders (name, order_value, created_at, updated_at)
+      values (?, ?, ?, ?)
+      ''',
+      [v, maxOrder + 1, now, now],
+    );
+  }
+
+  ensureFavoriteFolder(defaultFavoriteFolder);
+
   bool hasAnyPageFile(Directory pagesDir) {
     if (!pagesDir.existsSync()) return false;
     bool isPageFile(String name) {
@@ -35,8 +70,9 @@ Handler buildHandler({
           if (isPageFile(p.basename(entity.path))) return true;
         } else if (entity is Directory) {
           for (final child in entity.listSync()) {
-            if (child is File && isPageFile(p.basename(child.path)))
+            if (child is File && isPageFile(p.basename(child.path))) {
               return true;
+            }
           }
         }
       }
@@ -251,8 +287,9 @@ Handler buildHandler({
     }
 
     final file = File(p.join(pagesDir.path, name));
-    if (!file.existsSync())
+    if (!file.existsSync()) {
       return _json(404, {'ok': false, 'error': 'not found'});
+    }
 
     final mime = lookupMimeType(file.path) ?? 'application/octet-stream';
     return Response.ok(file.openRead(), headers: {'content-type': mime});
@@ -283,6 +320,408 @@ Handler buildHandler({
         'content-disposition': 'attachment; filename="userdata.picadata"',
       },
     );
+  });
+
+  Future<Map<String, dynamic>?> readJsonMap(Request req) async {
+    final body = await req.readAsString();
+    if (body.trim().isEmpty) return null;
+    final decoded = jsonDecode(body);
+    if (decoded is! Map) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  api.get('/v1/favorites/folders', (Request req) {
+    ensureFavoriteFolder(defaultFavoriteFolder);
+    final rows = db.select(
+      'select name, order_value from favorite_folders order by order_value desc',
+    );
+    final folders = rows
+        .map((r) => {
+              'name': r['name'],
+              'orderValue': r['order_value'],
+            })
+        .toList();
+    return _json(200, {'ok': true, 'folders': folders});
+  });
+
+  api.post('/v1/favorites/folders', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+    final name = (json['name'] ?? '').toString().trim();
+    if (!isValidFolderName(name)) {
+      return _json(400, {'ok': false, 'error': 'invalid name'});
+    }
+    ensureFavoriteFolder(defaultFavoriteFolder);
+    ensureFavoriteFolder(name);
+    return _json(200, {'ok': true});
+  });
+
+  api.patch('/v1/favorites/folders/order', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+    final namesRaw = json['names'];
+    if (namesRaw is! List) {
+      return _json(400, {'ok': false, 'error': 'missing names'});
+    }
+    ensureFavoriteFolder(defaultFavoriteFolder);
+    final names = namesRaw
+        .map((e) => e.toString().trim())
+        .where(isValidFolderName)
+        .toList();
+    if (names.isEmpty) return _json(200, {'ok': true});
+
+    final existing = db
+        .select('select name from favorite_folders')
+        .map((r) => r['name'].toString())
+        .toSet();
+    final ordered = names.where(existing.contains).toList();
+    if (ordered.isEmpty) return _json(200, {'ok': true});
+
+    final maxOrder = db
+        .select(
+            'select coalesce(max(order_value), 0) as m from favorite_folders')
+        .first['m'] as int;
+    final base = maxOrder + ordered.length;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (var i = 0; i < ordered.length; i++) {
+      db.execute(
+        'update favorite_folders set order_value = ?, updated_at = ? where name = ?',
+        [base - i, now, ordered[i]],
+      );
+    }
+    return _json(200, {'ok': true});
+  });
+
+  api.patch('/v1/favorites/folders/rename', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+    final from = (json['from'] ?? '').toString().trim();
+    final to = (json['to'] ?? '').toString().trim();
+    if (!isValidFolderName(from) || !isValidFolderName(to)) {
+      return _json(400, {'ok': false, 'error': 'invalid name'});
+    }
+    if (from == defaultFavoriteFolder) {
+      return _json(400, {'ok': false, 'error': 'cannot rename default'});
+    }
+    ensureFavoriteFolder(defaultFavoriteFolder);
+    final exists = db.select(
+      'select name from favorite_folders where name = ?',
+      [from],
+    ).firstOrNull;
+    if (exists == null) return _json(404, {'ok': false, 'error': 'not found'});
+    final toExists = db.select(
+      'select name from favorite_folders where name = ?',
+      [to],
+    ).firstOrNull;
+    if (toExists != null) {
+      return _json(409, {'ok': false, 'error': 'already exists'});
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      'update favorite_folders set name = ?, updated_at = ? where name = ?',
+      [to, now, from],
+    );
+    db.execute(
+      'update favorites set folder = ?, updated_at = ? where folder = ?',
+      [to, now, from],
+    );
+    return _json(200, {'ok': true});
+  });
+
+  api.delete('/v1/favorites/folders/<name>', (Request req, String name) {
+    final folder = Uri.decodeComponent(name).trim();
+    if (!isValidFolderName(folder)) {
+      return _json(400, {'ok': false, 'error': 'invalid name'});
+    }
+    if (folder == defaultFavoriteFolder) {
+      return _json(400, {'ok': false, 'error': 'cannot delete default'});
+    }
+    ensureFavoriteFolder(defaultFavoriteFolder);
+    final exists = db.select(
+      'select name from favorite_folders where name = ?',
+      [folder],
+    ).firstOrNull;
+    if (exists == null) return _json(404, {'ok': false, 'error': 'not found'});
+
+    final moveTo = (req.url.queryParameters['moveTo'] ?? defaultFavoriteFolder)
+        .toString()
+        .trim();
+    if (!isValidFolderName(moveTo)) {
+      return _json(400, {'ok': false, 'error': 'invalid moveTo'});
+    }
+    ensureFavoriteFolder(moveTo);
+
+    final maxOrderRow = db.select(
+      'select coalesce(max(order_value), 0) as m from favorites where folder = ?',
+      [moveTo],
+    );
+    var base = maxOrderRow.first['m'] as int;
+
+    final items = db.select(
+      '''
+      select source_key, target
+      from favorites
+      where folder = ?
+      order by order_value desc
+      ''',
+      [folder],
+    );
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final item in items) {
+      base += 1;
+      db.execute(
+        '''
+        update favorites
+        set folder = ?, order_value = ?, updated_at = ?
+        where source_key = ? and target = ?
+        ''',
+        [moveTo, base, now, item['source_key'], item['target']],
+      );
+    }
+
+    db.execute('delete from favorite_folders where name = ?', [folder]);
+    return _json(200, {'ok': true});
+  });
+
+  api.get('/v1/favorites', (Request req) {
+    ensureFavoriteFolder(defaultFavoriteFolder);
+    final folder = (req.url.queryParameters['folder'] ?? defaultFavoriteFolder)
+        .toString()
+        .trim();
+    if (!isValidFolderName(folder)) {
+      return _json(400, {'ok': false, 'error': 'invalid folder'});
+    }
+    final rows = db.select(
+      '''
+      select source_key, target, folder, title, subtitle, cover, tags, order_value, added_at, updated_at
+      from favorites
+      where folder = ?
+      order by order_value desc
+      ''',
+      [folder],
+    );
+    final favorites = rows
+        .map((r) => {
+              'sourceKey': r['source_key'],
+              'target': r['target'],
+              'folder': r['folder'],
+              'title': r['title'],
+              'subtitle': r['subtitle'],
+              'cover': r['cover'],
+              'tags': _tryDecodeJson(r['tags']) ?? [],
+              'orderValue': r['order_value'],
+              'addedAt': r['added_at'],
+              'updatedAt': r['updated_at'],
+            })
+        .toList();
+    return _json(200, {'ok': true, 'folder': folder, 'favorites': favorites});
+  });
+
+  api.get('/v1/favorites/contains', (Request req) {
+    final sourceKey = (req.url.queryParameters['sourceKey'] ?? '').toString();
+    final target = (req.url.queryParameters['target'] ?? '').toString();
+    if (sourceKey.trim().isEmpty || target.trim().isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing params'});
+    }
+    final row = db.select(
+      'select folder from favorites where source_key = ? and target = ?',
+      [sourceKey, target],
+    ).firstOrNull;
+    return _json(200, {
+      'ok': true,
+      'exists': row != null,
+      'folder': row?['folder'],
+    });
+  });
+
+  api.post('/v1/favorites', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+
+    final sourceKey = (json['sourceKey'] ?? '').toString();
+    final target = (json['target'] ?? '').toString();
+    if (sourceKey.trim().isEmpty || target.trim().isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing id'});
+    }
+
+    final folderRaw =
+        (json['folder'] ?? defaultFavoriteFolder).toString().trim();
+    final folder =
+        isValidFolderName(folderRaw) ? folderRaw : defaultFavoriteFolder;
+    ensureFavoriteFolder(defaultFavoriteFolder);
+    ensureFavoriteFolder(folder);
+
+    final title = (json['title'] ?? '').toString();
+    final subtitle = (json['subtitle'] ?? '').toString();
+    final cover = (json['cover'] ?? '').toString();
+    final tags = jsonEncode(json['tags'] ?? []);
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final existing = db.select(
+      'select folder from favorites where source_key = ? and target = ?',
+      [sourceKey, target],
+    ).firstOrNull;
+
+    if (existing == null) {
+      final maxOrder = db.select(
+        'select coalesce(max(order_value), 0) as m from favorites where folder = ?',
+        [folder],
+      ).first['m'] as int;
+      db.execute(
+        '''
+        insert into favorites
+        (source_key, target, folder, title, subtitle, cover, tags, order_value, added_at, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        [
+          sourceKey,
+          target,
+          folder,
+          title,
+          subtitle,
+          cover,
+          tags,
+          maxOrder + 1,
+          now,
+          now
+        ],
+      );
+      return _json(200, {'ok': true});
+    }
+
+    final oldFolder = (existing['folder'] ?? '').toString();
+    if (oldFolder != folder) {
+      final maxOrder = db.select(
+        'select coalesce(max(order_value), 0) as m from favorites where folder = ?',
+        [folder],
+      ).first['m'] as int;
+      db.execute(
+        '''
+        update favorites
+        set folder = ?, title = ?, subtitle = ?, cover = ?, tags = ?, order_value = ?, updated_at = ?
+        where source_key = ? and target = ?
+        ''',
+        [
+          folder,
+          title,
+          subtitle,
+          cover,
+          tags,
+          maxOrder + 1,
+          now,
+          sourceKey,
+          target
+        ],
+      );
+      return _json(200, {'ok': true});
+    }
+
+    db.execute(
+      '''
+      update favorites
+      set title = ?, subtitle = ?, cover = ?, tags = ?, updated_at = ?
+      where source_key = ? and target = ?
+      ''',
+      [title, subtitle, cover, tags, now, sourceKey, target],
+    );
+    return _json(200, {'ok': true});
+  });
+
+  api.delete('/v1/favorites', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+    final sourceKey = (json['sourceKey'] ?? '').toString();
+    final target = (json['target'] ?? '').toString();
+    if (sourceKey.trim().isEmpty || target.trim().isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing id'});
+    }
+    db.execute(
+      'delete from favorites where source_key = ? and target = ?',
+      [sourceKey, target],
+    );
+    return _json(200, {'ok': true});
+  });
+
+  api.patch('/v1/favorites/move', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+
+    final folderRaw = (json['folder'] ?? '').toString().trim();
+    if (!isValidFolderName(folderRaw)) {
+      return _json(400, {'ok': false, 'error': 'invalid folder'});
+    }
+    ensureFavoriteFolder(defaultFavoriteFolder);
+    ensureFavoriteFolder(folderRaw);
+
+    final itemsRaw = json['items'];
+    if (itemsRaw is! List) {
+      return _json(400, {'ok': false, 'error': 'missing items'});
+    }
+
+    final maxOrder = db.select(
+      'select coalesce(max(order_value), 0) as m from favorites where folder = ?',
+      [folderRaw],
+    ).first['m'] as int;
+    var base = maxOrder;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    for (final raw in itemsRaw) {
+      if (raw is! Map) continue;
+      final item = Map<String, dynamic>.from(raw);
+      final sourceKey = (item['sourceKey'] ?? '').toString();
+      final target = (item['target'] ?? '').toString();
+      if (sourceKey.trim().isEmpty || target.trim().isEmpty) continue;
+      base += 1;
+      db.execute(
+        '''
+        update favorites
+        set folder = ?, order_value = ?, updated_at = ?
+        where source_key = ? and target = ?
+        ''',
+        [folderRaw, base, now, sourceKey, target],
+      );
+    }
+
+    return _json(200, {'ok': true});
+  });
+
+  api.patch('/v1/favorites/order', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+    final folder = (json['folder'] ?? '').toString().trim();
+    if (!isValidFolderName(folder)) {
+      return _json(400, {'ok': false, 'error': 'invalid folder'});
+    }
+    final itemsRaw = json['items'];
+    if (itemsRaw is! List) {
+      return _json(400, {'ok': false, 'error': 'missing items'});
+    }
+
+    final maxOrder = db.select(
+      'select coalesce(max(order_value), 0) as m from favorites where folder = ?',
+      [folder],
+    ).first['m'] as int;
+    final base = maxOrder + itemsRaw.length;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    var i = 0;
+    for (final raw in itemsRaw) {
+      if (raw is! Map) continue;
+      final item = Map<String, dynamic>.from(raw);
+      final sourceKey = (item['sourceKey'] ?? '').toString();
+      final target = (item['target'] ?? '').toString();
+      if (sourceKey.trim().isEmpty || target.trim().isEmpty) continue;
+      db.execute(
+        '''
+        update favorites
+        set order_value = ?, updated_at = ?
+        where folder = ? and source_key = ? and target = ?
+        ''',
+        [base - i, now, folder, sourceKey, target],
+      );
+      i++;
+    }
+    return _json(200, {'ok': true});
   });
 
   api.post('/v1/comics', (Request req) async {
@@ -468,11 +907,13 @@ Handler buildHandler({
         .select('select cover_path from comics where id = ?', [id]).firstOrNull;
     if (row == null) return _json(404, {'ok': false, 'error': 'not found'});
     final coverPath = row['cover_path'] as String?;
-    if (coverPath == null)
+    if (coverPath == null) {
       return _json(404, {'ok': false, 'error': 'no cover'});
+    }
     final file = File(coverPath);
-    if (!file.existsSync())
+    if (!file.existsSync()) {
       return _json(404, {'ok': false, 'error': 'file missing'});
+    }
     return Response.ok(
       file.openRead(),
       headers: {'content-type': 'application/octet-stream'},
@@ -523,6 +964,31 @@ void _initDb(Database db) {
       zip_path text,
       cover_path text,
       zip_sha256 text
+    );
+  ''');
+
+  db.execute('''
+    create table if not exists favorite_folders (
+      name text primary key,
+      order_value int not null,
+      created_at int not null,
+      updated_at int not null
+    );
+  ''');
+
+  db.execute('''
+    create table if not exists favorites (
+      source_key text not null,
+      target text not null,
+      folder text not null,
+      title text not null,
+      subtitle text not null,
+      cover text not null,
+      tags text not null,
+      order_value int not null,
+      added_at int not null,
+      updated_at int not null,
+      primary key (source_key, target)
     );
   ''');
 }

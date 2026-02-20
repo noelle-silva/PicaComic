@@ -6,6 +6,7 @@ import 'package:pica_comic/foundation/image_loader/cached_image.dart';
 import 'package:pica_comic/network/download.dart';
 import 'accounts_page.dart';
 import 'package:pica_comic/pages/download_page.dart';
+import 'favorites/server_favorites.dart';
 import 'package:pica_comic/pages/tools.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'history_page.dart';
@@ -50,6 +51,10 @@ class MePage extends StatelessWidget {
                               height: 12,
                             ),
                             buildServerLibrary(context, width),
+                            const SizedBox(
+                              height: 12,
+                            ),
+                            buildServerFavorites(context, width),
                           ],
                         ),
                       ),
@@ -85,6 +90,10 @@ class MePage extends StatelessWidget {
                     height: 12,
                   ),
                   buildServerLibrary(context, width),
+                  const SizedBox(
+                    height: 12,
+                  ),
+                  buildServerFavorites(context, width),
                   const SizedBox(
                     height: 12,
                   ),
@@ -214,6 +223,15 @@ class MePage extends StatelessWidget {
       title: "服务器漫画库".tl,
       description: "查看并下载服务器上的漫画".tl,
       onTap: () => context.to(() => const ServerLibraryPage()),
+    );
+  }
+
+  Widget buildServerFavorites(BuildContext context, double width) {
+    return _MePageCard(
+      icon: const Icon(Icons.collections_bookmark_outlined),
+      title: "服务器收藏".tl,
+      description: "查看服务器上的收藏".tl,
+      onTap: () => context.to(() => const ServerFavoritesPage()),
     );
   }
 
