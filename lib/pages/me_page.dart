@@ -15,6 +15,7 @@ import 'history_page.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'image_favorites.dart';
 import 'server_library_page.dart';
+import 'server_tasks_page.dart';
 
 class MePage extends StatelessWidget {
   const MePage({super.key});
@@ -53,6 +54,10 @@ class MePage extends StatelessWidget {
                               height: 12,
                             ),
                             buildServerLibrary(context, width),
+                            const SizedBox(
+                              height: 12,
+                            ),
+                            buildServerTasks(context, width),
                             const SizedBox(
                               height: 12,
                             ),
@@ -96,6 +101,10 @@ class MePage extends StatelessWidget {
                     height: 12,
                   ),
                   buildServerLibrary(context, width),
+                  const SizedBox(
+                    height: 12,
+                  ),
+                  buildServerTasks(context, width),
                   const SizedBox(
                     height: 12,
                   ),
@@ -233,6 +242,15 @@ class MePage extends StatelessWidget {
       title: "服务器漫画库".tl,
       description: "查看并下载服务器上的漫画".tl,
       onTap: () => context.to(() => const ServerLibraryPage()),
+    );
+  }
+
+  Widget buildServerTasks(BuildContext context, double width) {
+    return _MePageCard(
+      icon: const Icon(Icons.task_alt),
+      title: "服务器任务".tl,
+      description: "查看服务器下载任务状态/错误".tl,
+      onTap: () => context.to(() => const ServerTasksPage()),
     );
   }
 
