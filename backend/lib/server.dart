@@ -1,13 +1,2034 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:archive/archive_io.dart';
+import 'package:crypto/crypto.dart';
+import 'package:html/parser.dart' as html;
+import 'package:image/image.dart' as img;
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
+import 'package:pointycastle/api.dart';
+import 'package:pointycastle/block/aes.dart';
+import 'package:pointycastle/block/modes/ecb.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import 'package:sqlite3/sqlite3.dart';
+
+Future<void> _downloadToFile(
+  Uri uri,
+  File outFile, {
+  Map<String, String>? headers,
+  Duration timeout = const Duration(minutes: 20),
+  int? maxBytes,
+}) async {
+  if (uri.scheme != 'http' && uri.scheme != 'https') {
+    throw ArgumentError('unsupported scheme');
+  }
+
+  final parent = outFile.parent;
+  if (!parent.existsSync()) {
+    parent.createSync(recursive: true);
+  }
+  if (outFile.existsSync()) {
+    outFile.deleteSync();
+  }
+
+  final client = HttpClient()..connectionTimeout = timeout;
+  try {
+    final req = await client.getUrl(uri).timeout(timeout);
+    req.followRedirects = true;
+    req.maxRedirects = 5;
+    headers?.forEach((k, v) {
+      if (k.trim().isEmpty) return;
+      req.headers.set(k, v);
+    });
+
+    final res = await req.close().timeout(timeout);
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw HttpException('bad status: ${res.statusCode}', uri: uri);
+    }
+
+    if (maxBytes != null && res.contentLength >= 0) {
+      if (res.contentLength > maxBytes) {
+        throw StateError('file too large');
+      }
+    }
+
+    final sink = outFile.openWrite();
+    var received = 0;
+    try {
+      await for (final chunk in res) {
+        received += chunk.length;
+        if (maxBytes != null && received > maxBytes) {
+          throw StateError('file too large');
+        }
+        sink.add(chunk);
+      }
+    } finally {
+      await sink.flush();
+      await sink.close();
+    }
+  } finally {
+    client.close(force: true);
+  }
+}
+
+final _secureRandom = Random.secure();
+
+String _randomId([int bytes = 16]) {
+  final data = Uint8List(bytes);
+  for (var i = 0; i < data.length; i++) {
+    data[i] = _secureRandom.nextInt(256);
+  }
+  return base64UrlEncode(data).replaceAll('=', '');
+}
+
+String _randomHex(int bytes) {
+  final data = Uint8List(bytes);
+  for (var i = 0; i < data.length; i++) {
+    data[i] = _secureRandom.nextInt(256);
+  }
+  final sb = StringBuffer();
+  for (final b in data) {
+    sb.write(b.toRadixString(16).padLeft(2, '0'));
+  }
+  return sb.toString();
+}
+
+bool _isRetryableStatus(int code) {
+  if (code == 408) return true;
+  if (code == 409) return true;
+  if (code == 425) return true;
+  if (code == 429) return true;
+  return code >= 500;
+}
+
+class _HttpRes {
+  final int statusCode;
+  final Uint8List body;
+  final Uri uri;
+  final String? contentType;
+
+  const _HttpRes({
+    required this.statusCode,
+    required this.body,
+    required this.uri,
+    required this.contentType,
+  });
+
+  String bodyText() => utf8.decode(body, allowMalformed: true);
+}
+
+Future<_HttpRes> _httpGetBytes(
+  Uri uri, {
+  Map<String, String>? headers,
+  Duration timeout = const Duration(seconds: 20),
+  int? maxBytes,
+}) async {
+  if (uri.scheme != 'http' && uri.scheme != 'https') {
+    throw ArgumentError('unsupported scheme');
+  }
+  final client = HttpClient()..connectionTimeout = timeout;
+  try {
+    final req = await client.getUrl(uri).timeout(timeout);
+    req.followRedirects = true;
+    req.maxRedirects = 5;
+    headers?.forEach((k, v) {
+      if (k.trim().isEmpty) return;
+      req.headers.set(k, v);
+    });
+
+    final res = await req.close().timeout(timeout);
+    final contentType = res.headers.contentType?.toString();
+    if (maxBytes != null && res.contentLength >= 0) {
+      if (res.contentLength > maxBytes) {
+        throw StateError('body too large');
+      }
+    }
+    final chunks = <int>[];
+    var received = 0;
+    await for (final chunk in res) {
+      received += chunk.length;
+      if (maxBytes != null && received > maxBytes) {
+        throw StateError('body too large');
+      }
+      chunks.addAll(chunk);
+    }
+    return _HttpRes(
+      statusCode: res.statusCode,
+      body: Uint8List.fromList(chunks),
+      uri: res.redirects.isNotEmpty ? res.redirects.last.location : uri,
+      contentType: contentType,
+    );
+  } finally {
+    client.close(force: true);
+  }
+}
+
+Future<_HttpRes> _httpGetBytesWithRetry(
+  Uri uri, {
+  Map<String, String>? headers,
+  Duration timeout = const Duration(seconds: 20),
+  int retries = 3,
+  int? maxBytes,
+}) async {
+  Object? lastErr;
+  for (var i = 0; i <= retries; i++) {
+    try {
+      final res = await _httpGetBytes(
+        uri,
+        headers: headers,
+        timeout: timeout,
+        maxBytes: maxBytes,
+      );
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        return res;
+      }
+      if (!_isRetryableStatus(res.statusCode) || i == retries) {
+        throw HttpException('bad status: ${res.statusCode}', uri: uri);
+      }
+      await Future.delayed(Duration(milliseconds: 300 * (1 << i)));
+    } catch (e) {
+      lastErr = e;
+      if (i == retries) break;
+      await Future.delayed(Duration(milliseconds: 300 * (1 << i)));
+    }
+  }
+  throw lastErr ?? Exception('request failed');
+}
+
+class _TaskCtx {
+  final Database db;
+  final String taskId;
+
+  int _progress = 0;
+  int _total = 0;
+  String? _message;
+  int _lastWriteMs = 0;
+
+  _TaskCtx(this.db, this.taskId);
+
+  void setTotal(int total) {
+    if (total < 0) total = 0;
+    _total = total;
+    _write(force: true);
+  }
+
+  void setMessage(String? message) {
+    _message = message;
+    _write(force: true);
+  }
+
+  void advance([int delta = 1]) {
+    _progress += delta;
+    if (_progress < 0) _progress = 0;
+    _write();
+  }
+
+  void _write({bool force = false}) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (!force && now - _lastWriteMs < 500) return;
+    _lastWriteMs = now;
+    db.execute(
+      '''
+      update tasks
+      set progress = ?, total = ?, message = ?, updated_at = ?
+      where id = ?
+      ''',
+      [_progress, _total, _message, now, taskId],
+    );
+  }
+}
+
+class _DownloadedComicData {
+  final String id;
+  final String title;
+  final String subtitle;
+  final int type;
+  final List<String> tags;
+  final String directory;
+  final Map<String, dynamic> downloadedJson;
+
+  const _DownloadedComicData({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.type,
+    required this.tags,
+    required this.directory,
+    required this.downloadedJson,
+  });
+}
+
+class _TaskRunner {
+  final Database db;
+  final Directory storage;
+
+  final Queue<String> _queue = Queue();
+  final Set<String> _running = <String>{};
+
+  _TaskRunner({
+    required this.db,
+    required this.storage,
+  });
+
+  void markStaleRunningTasksFailed() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      update tasks
+      set status = 'failed', message = 'server restarted', updated_at = ?
+      where status = 'running'
+      ''',
+      [now],
+    );
+  }
+
+  String createDownloadTask(Map<String, dynamic> params) {
+    final source = (params['source'] ?? '').toString().trim();
+    final target = (params['target'] ?? '').toString().trim();
+    if (source.isEmpty) throw ArgumentError('missing source');
+    if (target.isEmpty) throw ArgumentError('missing target');
+
+    final id = _randomId(18);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      insert into tasks
+      (id, type, source, target, params_json, status, progress, total, message, comic_id, created_at, updated_at)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ''',
+      [
+        id,
+        'download',
+        source,
+        target,
+        jsonEncode(params),
+        'queued',
+        0,
+        0,
+        null,
+        null,
+        now,
+        now,
+      ],
+    );
+    enqueue(id);
+    return id;
+  }
+
+  void enqueue(String taskId) {
+    if (_running.contains(taskId)) return;
+    if (_queue.contains(taskId)) return;
+    _queue.add(taskId);
+    _pump();
+  }
+
+  void _pump() {
+    while (_running.isEmpty && _queue.isNotEmpty) {
+      final taskId = _queue.removeFirst();
+      if (_running.contains(taskId)) continue;
+      _running.add(taskId);
+      unawaited(_run(taskId).whenComplete(() {
+        _running.remove(taskId);
+        _pump();
+      }));
+    }
+  }
+
+  Future<void> _run(String taskId) async {
+    final row = db.select(
+      '''
+      select source, target, params_json
+      from tasks
+      where id = ?
+      ''',
+      [taskId],
+    ).firstOrNull;
+    if (row == null) return;
+
+    final source = (row['source'] as String).trim();
+    final target = (row['target'] as String).trim();
+    final paramsJson = (row['params_json'] as String);
+
+    Map<String, dynamic> params;
+    try {
+      params = Map<String, dynamic>.from(jsonDecode(paramsJson) as Map);
+    } catch (_) {
+      params = {'source': source, 'target': target};
+    }
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      update tasks
+      set status = 'running', message = null, updated_at = ?
+      where id = ?
+      ''',
+      [now, taskId],
+    );
+
+    final ctx = _TaskCtx(db, taskId);
+
+    try {
+      final downloaded = await _downloadBySource(
+        source: source,
+        target: target,
+        params: params,
+        ctx: ctx,
+      );
+
+      final comicId = downloaded.id;
+      final comicDir = Directory(
+        p.join(storage.path, 'comics', _safeId(comicId)),
+      );
+      final pagesDir = Directory(p.join(comicDir.path, 'pages'));
+      final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+
+      String? coverPath;
+      if (coverFile.existsSync()) {
+        coverPath = coverFile.path;
+      } else {
+        final extractedCover = File(p.join(pagesDir.path, 'cover.jpg'));
+        if (extractedCover.existsSync()) coverPath = extractedCover.path;
+      }
+
+      final sizeBytes = _directorySizeBytes(pagesDir);
+
+      final meta = <String, dynamic>{
+        'id': downloaded.id,
+        'title': downloaded.title,
+        'subtitle': downloaded.subtitle,
+        'type': downloaded.type,
+        'tags': downloaded.tags,
+        'directory': downloaded.directory,
+        'json': downloaded.downloadedJson,
+      };
+
+      db.execute(
+        '''
+        insert or replace into comics
+        (id, title, subtitle, type, tags, directory, time, size, meta_json, zip_path, cover_path, zip_sha256)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        [
+          downloaded.id,
+          downloaded.title,
+          downloaded.subtitle,
+          downloaded.type,
+          jsonEncode(downloaded.tags),
+          downloaded.directory,
+          DateTime.now().millisecondsSinceEpoch,
+          sizeBytes,
+          jsonEncode(meta),
+          null,
+          coverPath,
+          null,
+        ],
+      );
+
+      db.execute(
+        '''
+        update tasks
+        set status = 'succeeded', progress = total, comic_id = ?, updated_at = ?
+        where id = ?
+        ''',
+        [downloaded.id, DateTime.now().millisecondsSinceEpoch, taskId],
+      );
+    } catch (e) {
+      db.execute(
+        '''
+        update tasks
+        set status = 'failed', message = ?, updated_at = ?
+        where id = ?
+        ''',
+        ['download failed: $e', DateTime.now().millisecondsSinceEpoch, taskId],
+      );
+    }
+  }
+
+  int _directorySizeBytes(Directory dir) {
+    var total = 0;
+    try {
+      if (!dir.existsSync()) return 0;
+      for (final entity in dir.listSync(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          total += entity.lengthSync();
+        }
+      }
+    } catch (_) {
+      // ignore
+    }
+    return total;
+  }
+
+  Map<String, dynamic>? readAuth(String source) {
+    final row = db.select(
+      'select data_json from auth_sessions where source = ?',
+      [source],
+    ).firstOrNull;
+    if (row == null) return null;
+    final dataJson = (row['data_json'] as String);
+    try {
+      final decoded = jsonDecode(dataJson);
+      if (decoded is! Map) return null;
+      return Map<String, dynamic>.from(decoded);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<_DownloadedComicData> _downloadBySource({
+    required String source,
+    required String target,
+    required Map<String, dynamic> params,
+    required _TaskCtx ctx,
+  }) async {
+    return switch (source) {
+      'picacg' =>
+        _downloadPicacg(storage, readAuth('picacg'), target, params, ctx),
+      'ehentai' =>
+        _downloadEhentai(storage, readAuth('ehentai'), target, params, ctx),
+      'jm' => _downloadJm(storage, readAuth('jm'), target, params, ctx),
+      'hitomi' =>
+        _downloadHitomi(storage, readAuth('hitomi'), target, params, ctx),
+      'htmanga' =>
+        _downloadHtmanga(storage, readAuth('htmanga'), target, params, ctx),
+      'nhentai' =>
+        _downloadNhentai(storage, readAuth('nhentai'), target, params, ctx),
+      _ => throw ArgumentError('unknown source'),
+    };
+  }
+}
+
+void _recreateDir(Directory dir) {
+  if (dir.existsSync()) {
+    try {
+      dir.deleteSync(recursive: true);
+    } catch (_) {
+      // ignore
+    }
+  }
+  dir.createSync(recursive: true);
+}
+
+String _normalizeHttpUrl(String input) {
+  var v = input.trim();
+  if (v.startsWith('//')) return 'https:$v';
+  if (v.startsWith('https:') && !v.startsWith('https://')) {
+    v = v.replaceFirst('https:', 'https://');
+  }
+  if (v.startsWith('http:') && !v.startsWith('http://')) {
+    v = v.replaceFirst('http:', 'http://');
+  }
+  return v;
+}
+
+String _guessExtFromUrl(Uri uri, {String fallback = 'jpg'}) {
+  final path = uri.path;
+  final base = path.split('/').last;
+  final dot = base.lastIndexOf('.');
+  if (dot <= 0 || dot == base.length - 1) return fallback;
+  final ext = base.substring(dot + 1).toLowerCase();
+  if (ext.length > 8) return fallback;
+  if (!RegExp(r'^[a-z0-9]+$').hasMatch(ext)) return fallback;
+  return ext;
+}
+
+Future<_DownloadedComicData> _downloadPicacg(
+  Directory storage,
+  Map<String, dynamic>? auth,
+  String target,
+  Map<String, dynamic> params,
+  _TaskCtx ctx,
+) async {
+  final token = (auth?['token'] ?? auth?['authorization'] ?? '').toString();
+  if (token.trim().isEmpty) {
+    throw StateError('missing auth.token');
+  }
+
+  final apiUrl = 'https://picaapi.picacomic.com';
+  const apiKey = 'C69BAF41DA5ABD1FFEDC6D2FEA56B';
+  const secret =
+      r'~d}$Q7$eIni=V)9\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n|0/*Cn';
+
+  String createSignature(
+      String path, String nonce, String time, String method) {
+    final key = (path + time + nonce + method + apiKey).toLowerCase();
+    final hmacSha256 = Hmac(sha256, utf8.encode(secret));
+    return hmacSha256.convert(utf8.encode(key)).toString();
+  }
+
+  Map<String, String> headersFor(String method, String pathWithQuery) {
+    final nonce = _randomHex(16);
+    final time = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+    final signature = createSignature(pathWithQuery, nonce, time, method);
+    final appChannel = (auth?['appChannel'] ?? '3').toString().trim();
+    final imageQuality =
+        (auth?['imageQuality'] ?? 'original').toString().trim();
+    final appUuid = (auth?['appUuid'] ?? 'defaultUuid').toString().trim();
+
+    return {
+      'api-key': apiKey,
+      'accept': 'application/vnd.picacomic.com.v1+json',
+      'app-channel': appChannel.isEmpty ? '3' : appChannel,
+      'authorization': token,
+      'time': time,
+      'nonce': nonce,
+      'app-version': '2.2.1.3.3.4',
+      'app-uuid': appUuid.isEmpty ? 'defaultUuid' : appUuid,
+      'image-quality': imageQuality.isEmpty ? 'original' : imageQuality,
+      'app-platform': 'android',
+      'app-build-version': '45',
+      'content-type': 'application/json; charset=UTF-8',
+      'user-agent': 'okhttp/3.8.1',
+      'version': 'v1.4.1',
+      'host': 'picaapi.picacomic.com',
+      'signature': signature,
+    };
+  }
+
+  Future<Map<String, dynamic>> getJson(String pathWithQuery) async {
+    final uri = Uri.parse('$apiUrl/$pathWithQuery');
+    Object? lastErr;
+    for (var i = 0; i < 3; i++) {
+      try {
+        final res = await _httpGetBytes(
+          uri,
+          headers: headersFor('GET', pathWithQuery),
+          timeout: const Duration(seconds: 20),
+          maxBytes: 10 * 1024 * 1024,
+        );
+        final body = res.bodyText();
+        final decoded = jsonDecode(body);
+        if (decoded is! Map) throw StateError('invalid json');
+        final map = Map<String, dynamic>.from(decoded);
+        if (res.statusCode == 200) return map;
+        final msg =
+            (map['message'] ?? map['error'] ?? 'request failed').toString();
+        throw StateError('picacg request failed: ${res.statusCode} $msg');
+      } catch (e) {
+        lastErr = e;
+        await Future.delayed(Duration(milliseconds: 300 * (1 << i)));
+      }
+    }
+    throw lastErr ?? Exception('request failed');
+  }
+
+  final id = target.trim();
+  if (id.isEmpty) throw StateError('invalid target');
+
+  ctx.setMessage('fetch comic info');
+  final comicRes = await getJson('comics/$id');
+  final comic =
+      comicRes['data'] is Map ? (comicRes['data'] as Map)['comic'] : null;
+  if (comic is! Map) throw StateError('invalid comic response');
+
+  ctx.setMessage('fetch eps');
+  Future<List<String>> getEps() async {
+    final eps = <String>[];
+    var page = 1;
+    while (true) {
+      final res = await getJson('comics/$id/eps?page=$page');
+      final data = res['data'];
+      if (data is! Map) break;
+      final epsObj = data['eps'];
+      if (epsObj is! Map) break;
+      final docs = epsObj['docs'];
+      if (docs is List) {
+        for (final d in docs) {
+          if (d is Map) eps.add((d['title'] ?? '').toString());
+        }
+      }
+      final pages = int.tryParse((epsObj['pages'] ?? '').toString()) ?? page;
+      if (pages <= page) break;
+      page++;
+    }
+    return eps.reversed.toList();
+  }
+
+  Future<List<String>> getPages(int order) async {
+    final urls = <String>[];
+    var page = 1;
+    while (true) {
+      final res = await getJson('comics/$id/order/$order/pages?page=$page');
+      final data = res['data'];
+      if (data is! Map) break;
+      final pagesObj = data['pages'];
+      if (pagesObj is! Map) break;
+      final docs = pagesObj['docs'];
+      if (docs is List) {
+        for (final d in docs) {
+          if (d is! Map) continue;
+          final media = d['media'];
+          if (media is! Map) continue;
+          final fs = (media['fileServer'] ?? '').toString();
+          final path = (media['path'] ?? '').toString();
+          if (fs.isEmpty || path.isEmpty) continue;
+          urls.add('$fs/static/$path');
+        }
+      }
+      final pages = int.tryParse((pagesObj['pages'] ?? '').toString()) ?? page;
+      if (pages <= page) break;
+      page++;
+    }
+    return urls;
+  }
+
+  final epsTitles = await getEps();
+  final epsRaw = params['eps'];
+  final selected = <int>[];
+  if (epsRaw is List) {
+    for (final e in epsRaw) {
+      final v = int.tryParse(e.toString());
+      if (v == null) continue;
+      if (v < 0) continue;
+      selected.add(v);
+    }
+  }
+  if (selected.isEmpty && epsTitles.isNotEmpty) {
+    selected.addAll(List<int>.generate(epsTitles.length, (i) => i));
+  }
+
+  final title = (comic['title'] ?? '').toString();
+  final author = (comic['author'] ?? '').toString();
+
+  String thumbUrl = '';
+  final thumb = comic['thumb'];
+  if (thumb is Map) {
+    final fs = (thumb['fileServer'] ?? '').toString();
+    final path = (thumb['path'] ?? '').toString();
+    if (fs.isNotEmpty && path.isNotEmpty) {
+      thumbUrl = '$fs/static/$path';
+    }
+  }
+
+  final creatorRaw = comic['_creator'];
+  final avatar = creatorRaw is Map ? creatorRaw['avatar'] : null;
+  var avatarUrl = '';
+  if (avatar is Map) {
+    final fs = (avatar['fileServer'] ?? '').toString();
+    final path = (avatar['path'] ?? '').toString();
+    if (fs.isNotEmpty && path.isNotEmpty) {
+      avatarUrl = '$fs/static/$path';
+    }
+  }
+
+  final creator = <String, dynamic>{
+    'id': (comic['_id'] ?? id).toString(),
+    'title': (creatorRaw is Map ? creatorRaw['title'] : null) ?? 'Unknown',
+    'email': '',
+    'name': (creatorRaw is Map ? creatorRaw['name'] : null) ?? 'Unknown',
+    'level': creatorRaw is Map ? (creatorRaw['level'] ?? 0) : 0,
+    'exp': creatorRaw is Map ? (creatorRaw['exp'] ?? 0) : 0,
+    'avatarUrl': avatarUrl,
+    'frameUrl': null,
+    'isPunched': null,
+    'slogan': (creatorRaw is Map ? creatorRaw['slogan'] : null) ?? '无',
+  };
+
+  final categories = <String>[];
+  final categoriesRaw = comic['categories'];
+  if (categoriesRaw is List) {
+    for (final c in categoriesRaw) {
+      final s = c.toString().trim();
+      if (s.isNotEmpty) categories.add(s);
+    }
+  }
+  final tags = <String>[];
+  final tagsRaw = comic['tags'];
+  if (tagsRaw is List) {
+    for (final t in tagsRaw) {
+      final s = t.toString().trim();
+      if (s.isNotEmpty) tags.add(s);
+    }
+  }
+
+  final comicItemJson = <String, dynamic>{
+    'creator': creator,
+    'id': id,
+    'title': title,
+    'description': (comic['description'] ?? '无').toString(),
+    'thumbUrl': thumbUrl,
+    'author': author,
+    'chineseTeam': (comic['chineseTeam'] ?? 'Unknown').toString(),
+    'categories': categories,
+    'tags': tags,
+    'likes': int.tryParse((comic['likesCount'] ?? '0').toString()) ?? 0,
+    'comments': int.tryParse((comic['commentsCount'] ?? '0').toString()) ?? 0,
+    'isLiked': comic['isLiked'] == true,
+    'isFavourite': comic['isFavourite'] == true,
+    'epsCount': int.tryParse((comic['epsCount'] ?? '0').toString()) ?? 0,
+    'time': (comic['updated_at'] ?? '').toString(),
+    'pagesCount': int.tryParse((comic['pagesCount'] ?? '0').toString()) ?? 0,
+  };
+
+  final downloadedJson = <String, dynamic>{
+    'comicItem': comicItemJson,
+    'chapters': epsTitles,
+    'size': null,
+    'downloadedChapters': selected,
+  };
+
+  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
+  _recreateDir(comicDir);
+  final pagesRoot = Directory(p.join(comicDir.path, 'pages'));
+  pagesRoot.createSync(recursive: true);
+
+  // compute total
+  var totalPages = 0;
+  final epPages = <int, List<String>>{};
+  ctx.setMessage('fetch pages');
+  for (final idx in selected) {
+    final order = idx + 1;
+    final urls = await getPages(order);
+    epPages[order] = urls;
+    totalPages += urls.length;
+  }
+  ctx.setTotal(totalPages + (thumbUrl.isNotEmpty ? 1 : 0));
+
+  if (thumbUrl.isNotEmpty) {
+    ctx.setMessage('download cover');
+    await _downloadToFile(
+      Uri.parse(thumbUrl),
+      File(p.join(comicDir.path, 'cover.jpg')),
+      timeout: const Duration(minutes: 2),
+      maxBytes: 20 * 1024 * 1024,
+    );
+    ctx.advance();
+  }
+
+  for (final entry in epPages.entries) {
+    final epNo = entry.key;
+    final urls = entry.value;
+    final epDir = Directory(p.join(pagesRoot.path, epNo.toString()));
+    epDir.createSync(recursive: true);
+    var pageNo = 0;
+    for (final u in urls) {
+      pageNo++;
+      ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
+      final uri = Uri.parse(u);
+      final ext = _guessExtFromUrl(uri);
+      await _downloadToFile(
+        uri,
+        File(p.join(epDir.path, '$pageNo.$ext')),
+        timeout: const Duration(minutes: 5),
+        maxBytes: 50 * 1024 * 1024,
+      );
+      ctx.advance();
+    }
+  }
+
+  return _DownloadedComicData(
+    id: id,
+    title: title.isEmpty ? id : title,
+    subtitle: author,
+    type: 0,
+    tags: tags,
+    directory: _safeId(id),
+    downloadedJson: downloadedJson,
+  );
+}
+
+Future<_DownloadedComicData> _downloadEhentai(
+  Directory storage,
+  Map<String, dynamic>? auth,
+  String target,
+  Map<String, dynamic> params,
+  _TaskCtx ctx,
+) async {
+  final cookie = (auth?['cookie'] ?? auth?['cookies'] ?? '').toString().trim();
+  if (cookie.isEmpty) {
+    throw StateError('missing auth.cookie');
+  }
+
+  Uri galleryUri;
+  try {
+    galleryUri = Uri.parse(target.trim());
+  } catch (_) {
+    throw StateError('invalid target url');
+  }
+  if (!galleryUri.path.contains('/g/')) {
+    throw StateError('target must be a gallery link');
+  }
+
+  final headersBase = <String, String>{
+    'user-agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'cookie': cookie,
+    'referer': '${galleryUri.scheme}://${galleryUri.authority}/',
+  };
+
+  String getGalleryId(String url) {
+    final i = url.indexOf('/g/');
+    if (i < 0) return '';
+    var j = i + 3;
+    var res = '';
+    while (j < url.length) {
+      final ch = url[j];
+      if (ch == '/') break;
+      res += ch;
+      j++;
+    }
+    return res;
+  }
+
+  ctx.setMessage('fetch gallery info');
+  final galleryRes = await _httpGetBytesWithRetry(
+    galleryUri,
+    headers: headersBase,
+    timeout: const Duration(seconds: 25),
+    retries: 2,
+    maxBytes: 12 * 1024 * 1024,
+  );
+  final doc = html.parse(galleryRes.bodyText());
+
+  final title = (doc.querySelector('h1#gn')?.text ?? '').trim();
+  var subTitle = (doc.querySelector('h1#gj')?.text ?? '').trim();
+  if (subTitle.isEmpty) subTitle = '';
+  final uploader = (doc.querySelector('div#gdn a')?.text ?? '').trim();
+
+  var maxPage = '1';
+  for (final td in doc.querySelectorAll('td.gdt2')) {
+    final t = td.text;
+    if (t.contains('pages')) {
+      final m = RegExp(r'\d+').firstMatch(t);
+      if (m != null) maxPage = m.group(0)!;
+      break;
+    }
+  }
+
+  final type = (doc.querySelector('.cs')?.text ?? '').trim();
+  final timeText =
+      (doc.querySelector('div#gdd > table > tbody > tr > td.gdt2')?.text ?? '')
+          .trim();
+
+  var coverPath = '';
+  final style =
+      doc.querySelector('div#gleft > div#gd1 > div')?.attributes['style'];
+  if (style != null) {
+    final m = RegExp(
+      r'https?://([-a-zA-Z0-9.]+(/\\S*)?\\.(?:jpg|jpeg|gif|png|webp))',
+    ).firstMatch(style);
+    if (m != null) coverPath = m.group(0)!;
+  }
+
+  final tagsMap = <String, List<String>>{};
+  for (final tr in doc.querySelectorAll('div#taglist > table > tbody > tr')) {
+    if (tr.children.length < 2) continue;
+    final key = tr.children[0].text.replaceAll(':', '').trim();
+    final list = <String>[];
+    for (final div in tr.children[1].children) {
+      final a = div.querySelector('a');
+      if (a == null) continue;
+      final v = a.text.trim();
+      if (v.isNotEmpty) list.add(v);
+    }
+    if (key.isNotEmpty) tagsMap[key] = list;
+  }
+  final tagsFlat = <String>[];
+  for (final values in tagsMap.values) {
+    tagsFlat.addAll(values);
+  }
+
+  // collect reader links across thumbnail pages
+  final firstLinks = doc.querySelectorAll('div#gdt > a');
+  final perThumbPage = firstLinks.length;
+  if (perThumbPage <= 0) throw StateError('no thumbnail links');
+  final totalPages = int.tryParse(maxPage) ?? 1;
+  final totalThumbPages = (totalPages / perThumbPage).ceil();
+
+  final readerLinks = <String>[];
+  for (var pageno = 0; pageno < totalThumbPages; pageno++) {
+    final u = galleryUri.replace(
+      queryParameters: {
+        ...galleryUri.queryParameters,
+        if (pageno > 0) 'p': pageno.toString(),
+      },
+    );
+    final res = await _httpGetBytesWithRetry(
+      u,
+      headers: headersBase,
+      timeout: const Duration(seconds: 25),
+      retries: 2,
+      maxBytes: 12 * 1024 * 1024,
+    );
+    final d = html.parse(res.bodyText());
+    for (final a in d.querySelectorAll('div#gdt > a')) {
+      final href = a.attributes['href'];
+      if (href == null || href.trim().isEmpty) continue;
+      readerLinks.add(href);
+    }
+  }
+
+  final gid = getGalleryId(galleryUri.toString());
+  if (gid.isEmpty) throw StateError('invalid gallery id');
+
+  final id = gid;
+  final directory = _safeId(id);
+
+  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
+  _recreateDir(comicDir);
+  final pagesDir = Directory(p.join(comicDir.path, 'pages'));
+  pagesDir.createSync(recursive: true);
+
+  ctx.setTotal((coverPath.isEmpty ? 0 : 1) + readerLinks.length);
+
+  if (coverPath.isNotEmpty) {
+    ctx.setMessage('download cover');
+    await _downloadToFile(
+      Uri.parse(coverPath),
+      File(p.join(comicDir.path, 'cover.jpg')),
+      headers: headersBase,
+      timeout: const Duration(minutes: 2),
+      maxBytes: 20 * 1024 * 1024,
+    );
+    ctx.advance();
+  }
+
+  var idx = 0;
+  for (final link in readerLinks) {
+    idx++;
+    ctx.setMessage('fetch page $idx/${readerLinks.length}');
+    final pageRes = await _httpGetBytesWithRetry(
+      Uri.parse(link),
+      headers: {
+        ...headersBase,
+        'referer': galleryUri.toString(),
+      },
+      timeout: const Duration(seconds: 25),
+      retries: 2,
+      maxBytes: 8 * 1024 * 1024,
+    );
+    final pageDoc = html.parse(pageRes.bodyText());
+    var imgUrl =
+        pageDoc.querySelector('div#i3 > a > img')?.attributes['src'] ?? '';
+    imgUrl = imgUrl.trim();
+    if (imgUrl.isEmpty) {
+      throw StateError('missing image url');
+    }
+    if (imgUrl.contains('509.gif')) {
+      throw StateError('image limit exceeded');
+    }
+
+    ctx.setMessage('download page $idx/${readerLinks.length}');
+    final uri = Uri.parse(imgUrl);
+    final ext = _guessExtFromUrl(uri, fallback: 'jpg');
+    await _downloadToFile(
+      uri,
+      File(p.join(pagesDir.path, '$idx.$ext')),
+      headers: {
+        ...headersBase,
+        'referer': link,
+      },
+      timeout: const Duration(minutes: 5),
+      maxBytes: 80 * 1024 * 1024,
+    );
+    ctx.advance();
+  }
+
+  final galleryJson = <String, dynamic>{
+    'title': title.isEmpty ? id : title,
+    'subTitle': subTitle.isEmpty ? null : subTitle,
+    'type': type,
+    'time': timeText,
+    'uploader': uploader,
+    'stars': 0.0,
+    'rating': null,
+    'coverPath': coverPath,
+    'tags': tagsMap,
+    'favorite': false,
+    'link': galleryUri.toString(),
+    'maxPage': maxPage,
+    'pageSize': perThumbPage,
+    'ext': 'jpg',
+    'width': 200,
+    'auth': <String, String>{},
+  };
+
+  final downloadedJson = <String, dynamic>{
+    'gallery': galleryJson,
+    'size': null,
+  };
+
+  return _DownloadedComicData(
+    id: id,
+    title: galleryJson['title'] as String,
+    subtitle: uploader,
+    type: 1,
+    tags: tagsFlat,
+    directory: directory,
+    downloadedJson: downloadedJson,
+  );
+}
+
+Future<_DownloadedComicData> _downloadJm(
+  Directory storage,
+  Map<String, dynamic>? auth,
+  String target,
+  Map<String, dynamic> params,
+  _TaskCtx ctx,
+) async {
+  final apiBaseUrl = (auth?['apiBaseUrl'] ?? '').toString().trim();
+  final imgBaseUrl = (auth?['imgBaseUrl'] ?? '').toString().trim();
+  final appVersion = (auth?['appVersion'] ?? '').toString().trim();
+  final scrambleId = (auth?['scrambleId'] ?? '220980').toString().trim();
+
+  if (apiBaseUrl.isEmpty) throw StateError('missing auth.apiBaseUrl');
+  if (imgBaseUrl.isEmpty) throw StateError('missing auth.imgBaseUrl');
+  if (appVersion.isEmpty) throw StateError('missing auth.appVersion');
+
+  final m = RegExp(r'\d+').firstMatch(target);
+  final rawId = (m?.group(0) ?? target).trim();
+  if (rawId.isEmpty) throw StateError('invalid target');
+
+  final id = 'jm$rawId';
+  final directory = _safeId(id);
+
+  const jmAuthKey = '18comicAPPContent';
+  const jmSecret = '185Hcomic3PAPP7R';
+  const ua =
+      'Mozilla/5.0 (Linux; Android 10; K; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/138.0.0.0 Mobile Safari/537.36';
+
+  Map<String, String> baseHeaders(int time, {bool post = false}) {
+    final token = md5.convert(utf8.encode('$time$jmAuthKey')).toString();
+    return {
+      'accept': '*/*',
+      'accept-encoding': 'gzip, deflate, br, zstd',
+      'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+      'connection': 'keep-alive',
+      'origin': 'https://localhost',
+      'referer': 'https://localhost/',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'cross-site',
+      'x-requested-with': 'com.example.app',
+      'authorization': 'Bearer',
+      'sec-fetch-storage-access': 'active',
+      'token': token,
+      'tokenparam': '$time,$appVersion',
+      'user-agent': ua,
+      if (post) 'content-type': 'application/x-www-form-urlencoded',
+    };
+  }
+
+  String convertData(String input, String secret) {
+    final key = md5.convert(utf8.encode(secret)).toString();
+    final data = base64Decode(input);
+    final cipher = ECBBlockCipher(AESEngine())
+      ..init(false, KeyParameter(utf8.encode(key)));
+    var offset = 0;
+    final out = Uint8List(data.length);
+    while (offset < data.length) {
+      offset += cipher.processBlock(data, offset, out, offset);
+    }
+    final res = utf8.decode(out, allowMalformed: true);
+    var i = res.length - 1;
+    for (; i >= 0; i--) {
+      final ch = res[i];
+      if (ch == '}' || ch == ']') break;
+    }
+    return res.substring(0, i + 1);
+  }
+
+  Future<Map<String, dynamic>> jmGet(String pathQuery) async {
+    final time = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final uri = pathQuery.startsWith('http')
+        ? Uri.parse(pathQuery)
+        : Uri.parse('$apiBaseUrl$pathQuery');
+    final res = await _httpGetBytesWithRetry(
+      uri,
+      headers: baseHeaders(time),
+      timeout: const Duration(seconds: 20),
+      retries: 2,
+      maxBytes: 12 * 1024 * 1024,
+    );
+    if (res.statusCode == 401) {
+      final decoded = jsonDecode(res.bodyText());
+      if (decoded is Map) {
+        final msg = (decoded['errorMsg'] ?? 'unauthorized').toString();
+        throw StateError(msg);
+      }
+      throw StateError('unauthorized');
+    }
+    final outer = jsonDecode(res.bodyText());
+    if (outer is! Map) throw StateError('invalid response');
+    final dataField = outer['data'];
+    if (dataField is List && dataField.isEmpty) {
+      throw StateError('empty data');
+    }
+    if (dataField is! String) {
+      throw StateError('missing data');
+    }
+    final decoded = convertData(dataField, '$time$jmSecret');
+    final inner = jsonDecode(decoded);
+    if (inner is! Map) throw StateError('invalid data');
+    return Map<String, dynamic>.from(inner);
+  }
+
+  int segmentationNum(String epsId, String scrambleID, String pictureName) {
+    final scramble = int.tryParse(scrambleID) ?? 0;
+    final eps = int.tryParse(epsId) ?? 0;
+    if (eps < scramble) return 0;
+    if (eps < 268850) return 10;
+    final str = '$eps$pictureName';
+    final hash = md5.convert(utf8.encode(str)).toString();
+    final charCode = hash.codeUnitAt(hash.length - 1);
+    if (eps > 421926) {
+      final remainder = charCode % 8;
+      return remainder * 2 + 2;
+    }
+    final remainder = charCode % 10;
+    return remainder * 2 + 2;
+  }
+
+  Uint8List recombineJm(Uint8List data, String epsId, String pictureName) {
+    final num = segmentationNum(epsId, scrambleId, pictureName);
+    if (num <= 1) return data;
+    final src = img.decodeImage(data);
+    if (src == null) {
+      throw StateError('failed to decode image');
+    }
+    final blockSize = (src.height / num).floor();
+    final remainder = src.height % num;
+    final blocks = <({int start, int end})>[];
+    for (var i = 0; i < num; i++) {
+      final start = i * blockSize;
+      final end = start + blockSize + (i != num - 1 ? 0 : remainder);
+      blocks.add((start: start, end: end));
+    }
+    final dst = img.Image(width: src.width, height: src.height);
+    var y = 0;
+    for (var i = blocks.length - 1; i >= 0; i--) {
+      final b = blocks[i];
+      final h = b.end - b.start;
+      for (var yy = 0; yy < h; yy++) {
+        for (var x = 0; x < src.width; x++) {
+          final pixel = src.getPixel(x, b.start + yy);
+          dst.setPixel(x, y + yy, pixel);
+        }
+      }
+      y += h;
+    }
+    return Uint8List.fromList(img.encodeJpg(dst));
+  }
+
+  ctx.setMessage('fetch comic info');
+  final album = await jmGet('/album?id=$rawId');
+
+  final author = <String>[];
+  final authorRaw = album['author'];
+  if (authorRaw is List) {
+    for (final a in authorRaw) {
+      final s = a.toString().trim();
+      if (s.isNotEmpty) author.add(s);
+    }
+  } else if (authorRaw != null) {
+    final s = authorRaw.toString().trim();
+    if (s.isNotEmpty) author.add(s);
+  }
+  if (author.isEmpty) author.add('未知');
+
+  final series = <int, String>{};
+  final epNames = <String>[];
+  final seriesRaw = album['series'];
+  if (seriesRaw is List) {
+    var sort = 1;
+    for (final s in seriesRaw) {
+      if (s is! Map) continue;
+      final cid = (s['id'] ?? '').toString().trim();
+      if (cid.isEmpty) continue;
+      series[sort] = cid;
+      var name = (s['name'] ?? '').toString();
+      if (name.trim().isEmpty) {
+        final sortName = (s['sort'] ?? sort).toString();
+        name = '第${sortName}話';
+      }
+      epNames.add(name);
+      sort++;
+    }
+  }
+  if (series.isEmpty) {
+    series[1] = rawId;
+    epNames.add('第1章');
+  }
+
+  final tags = <String>[];
+  final tagsRaw = album['tags'];
+  if (tagsRaw is List) {
+    for (final t in tagsRaw) {
+      final s = t.toString().trim();
+      if (s.isNotEmpty) tags.add(s);
+    }
+  }
+
+  final works = <String>[];
+  final worksRaw = album['works'];
+  if (worksRaw is List) {
+    for (final w in worksRaw) {
+      final s = w.toString().trim();
+      if (s.isNotEmpty) works.add(s);
+    }
+  }
+
+  final actors = <String>[];
+  final actorsRaw = album['actors'];
+  if (actorsRaw is List) {
+    for (final a in actorsRaw) {
+      final s = a.toString().trim();
+      if (s.isNotEmpty) actors.add(s);
+    }
+  }
+
+  final title = (album['name'] ?? '').toString().trim();
+  final description = (album['description'] ?? '').toString();
+
+  final epsRaw = params['eps'];
+  final selected = <int>[];
+  if (epsRaw is List) {
+    for (final e in epsRaw) {
+      final v = int.tryParse(e.toString());
+      if (v == null) continue;
+      if (v < 0) continue;
+      selected.add(v);
+    }
+  }
+  if (selected.isEmpty) {
+    selected.addAll(List<int>.generate(series.length, (i) => i));
+  }
+
+  final seriesJson = <String, String>{};
+  for (final e in series.entries) {
+    seriesJson[e.key.toString()] = e.value;
+  }
+
+  final jmComicJson = <String, dynamic>{
+    'name': title.isEmpty ? id : title,
+    'id': rawId,
+    'author': author,
+    'description': description,
+    'likes': '',
+    'views': '',
+    'series': seriesJson,
+    'tags': tags,
+    'works': works,
+    'actors': actors,
+    'relatedComics': [],
+    'liked': '',
+    'favorite': '',
+    'epNames': epNames,
+  };
+
+  final downloadedJson = <String, dynamic>{
+    'comic': jmComicJson,
+    'size': null,
+    'downloadedChapters': selected,
+  };
+
+  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
+  _recreateDir(comicDir);
+  final pagesRoot = Directory(p.join(comicDir.path, 'pages'));
+  pagesRoot.createSync(recursive: true);
+
+  // cover
+  final coverUrl = '$imgBaseUrl/media/albums/${rawId}_3x4.jpg';
+  ctx.setMessage('download cover');
+  ctx.setTotal(1);
+  await _downloadToFile(
+    Uri.parse(coverUrl),
+    File(p.join(comicDir.path, 'cover.jpg')),
+    headers: {'user-agent': ua, 'referer': 'https://localhost/'},
+    timeout: const Duration(minutes: 2),
+    maxBytes: 20 * 1024 * 1024,
+  );
+  ctx.advance();
+
+  // pages
+  final selectedKeys = series.keys.toList()..sort();
+  final chaptersToDownload = <int, String>{};
+  for (final k in selectedKeys) {
+    if (!selected.contains(k - 1)) continue;
+    final cid = series[k];
+    if (cid != null) chaptersToDownload[k] = cid;
+  }
+
+  // pre-fetch image lists for total
+  ctx.setMessage('fetch chapters');
+  final chapterImages = <int, List<String>>{};
+  var totalPages = 0;
+  for (final e in chaptersToDownload.entries) {
+    final chapterId = e.value;
+    final data = await jmGet('/chapter?&id=$chapterId');
+    final images = <String>[];
+    final imgs = data['images'];
+    if (imgs is List) {
+      for (final s in imgs) {
+        final name = s.toString().trim();
+        if (name.isEmpty) continue;
+        images.add('$imgBaseUrl/media/photos/$chapterId/$name');
+      }
+    }
+    chapterImages[e.key] = images;
+    totalPages += images.length;
+  }
+  ctx.setTotal(1 + totalPages);
+
+  for (final entry in chapterImages.entries) {
+    final epNo = entry.key;
+    final chapterId = chaptersToDownload[epNo] ?? '';
+    final urls = entry.value;
+    final epDir = Directory(p.join(pagesRoot.path, epNo.toString()));
+    epDir.createSync(recursive: true);
+
+    var pageNo = 0;
+    for (final u in urls) {
+      pageNo++;
+      ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
+      final uri = Uri.parse(u);
+      final imageName =
+          uri.pathSegments.isNotEmpty ? uri.pathSegments.last : '';
+      final pictureName = imageName.contains('.')
+          ? imageName.substring(0, imageName.lastIndexOf('.'))
+          : imageName;
+      final ext = _guessExtFromUrl(uri);
+
+      final bytesRes = await _httpGetBytesWithRetry(
+        uri,
+        headers: {
+          'user-agent': ua,
+          'referer': 'https://localhost/',
+          'accept':
+              'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        },
+        timeout: const Duration(minutes: 2),
+        retries: 2,
+        maxBytes: 80 * 1024 * 1024,
+      );
+
+      Uint8List outBytes = bytesRes.body;
+      String outExt = ext;
+      if (ext != 'gif') {
+        outBytes = recombineJm(outBytes, chapterId, pictureName);
+        outExt = 'jpg';
+      }
+
+      final outPath = p.join(epDir.path, '$pageNo.$outExt');
+      final outFile = File(outPath);
+      if (outFile.existsSync()) outFile.deleteSync();
+      outFile.createSync(recursive: true);
+      outFile.writeAsBytesSync(outBytes);
+      ctx.advance();
+    }
+  }
+
+  return _DownloadedComicData(
+    id: id,
+    title: jmComicJson['name'] as String,
+    subtitle: author.first,
+    type: 2,
+    tags: tags,
+    directory: directory,
+    downloadedJson: downloadedJson,
+  );
+}
+
+Future<_DownloadedComicData> _downloadHitomi(
+  Directory storage,
+  Map<String, dynamic>? auth,
+  String target,
+  Map<String, dynamic> params,
+  _TaskCtx ctx,
+) async {
+  final baseDomain =
+      (auth?['baseDomain'] ?? 'hitomi.la').toString().trim().isEmpty
+          ? 'hitomi.la'
+          : (auth?['baseDomain'] ?? 'hitomi.la').toString().trim();
+
+  final m = RegExp(r'\d+').firstMatch(target);
+  final rawId = (m?.group(0) ?? target).trim();
+  if (rawId.isEmpty) throw StateError('invalid target');
+
+  final id = 'hitomi$rawId';
+  final directory = _safeId(id);
+
+  final headers = <String, String>{
+    'user-agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'referer': 'https://hitomi.la/reader/$rawId.html',
+  };
+
+  Future<_HttpRes> getText(String url) {
+    return _httpGetBytesWithRetry(
+      Uri.parse(url),
+      headers: headers,
+      timeout: const Duration(seconds: 20),
+      retries: 2,
+      maxBytes: 12 * 1024 * 1024,
+    );
+  }
+
+  ctx.setMessage('fetch gallery js');
+  final galleryJsRes =
+      await getText('https://ltn.$baseDomain/galleries/$rawId.js');
+  final js = galleryJsRes.bodyText();
+  final start = js.indexOf('{');
+  if (start < 0) throw StateError('invalid galleries js');
+  final galleryJson = jsonDecode(js.substring(start));
+  if (galleryJson is! Map) throw StateError('invalid galleries json');
+
+  ctx.setMessage('fetch cover');
+  final blockRes =
+      await getText('https://ltn.$baseDomain/galleryblock/$rawId.html');
+  final blockDoc = html.parse(blockRes.bodyText());
+  String cover = '';
+  try {
+    final source = blockDoc
+            .querySelector('div.dj-img1 > picture > source')
+            ?.attributes['data-srcset'] ??
+        blockDoc
+            .querySelector('div.cg-img1 > picture > source')
+            ?.attributes['data-srcset'] ??
+        '';
+    if (source.isNotEmpty) {
+      var v = source;
+      if (v.startsWith('//')) v = v.substring(2);
+      v = v.substring(v.indexOf('/'));
+      cover = 'https://atn.$baseDomain$v';
+      cover = cover.replaceAll(RegExp(r'2x.*'), '').trim();
+      cover = cover.replaceFirst('avifbigtn', 'webpbigtn');
+      cover = cover.replaceFirst('.avif', '.webp');
+    }
+  } catch (_) {
+    cover = '';
+  }
+
+  final title = (galleryJson['title'] ?? '').toString().trim();
+  final type = (galleryJson['type'] ?? '').toString().trim();
+  final lang = (galleryJson['language'] ?? '').toString().trim();
+  final time = (galleryJson['date'] ?? '').toString().trim();
+
+  final artists = <String>[];
+  final artistsRaw = galleryJson['artists'];
+  if (artistsRaw is List) {
+    for (final a in artistsRaw) {
+      if (a is Map && a['artist'] != null) {
+        artists.add(a['artist'].toString());
+      } else {
+        final s = a.toString().trim();
+        if (s.isNotEmpty) artists.add(s);
+      }
+    }
+  }
+
+  final files = <Map<String, dynamic>>[];
+  final filesRaw = galleryJson['files'];
+  if (filesRaw is List) {
+    for (final f in filesRaw) {
+      if (f is! Map) continue;
+      files.add({
+        'name': (f['name'] ?? '').toString(),
+        'hash': (f['hash'] ?? '').toString(),
+        'hasWebp': (f['haswebp'] == 1) || (f['haswebp'] == true),
+        'hasAvif': (f['hasavif'] == 1) || (f['hasavif'] == true),
+        'height': int.tryParse((f['height'] ?? '').toString()) ?? 0,
+        'width': int.tryParse((f['width'] ?? '').toString()) ?? 0,
+        'galleryId': rawId,
+      });
+    }
+  }
+
+  // GG.js parsing + url builder (ported from app)
+  var ggCacheTime = DateTime.fromMillisecondsSinceEpoch(0);
+  String? ggB;
+  var ggNumbers = <String>[];
+  var ggInitialG = 1;
+
+  int mm(int g) {
+    if (ggNumbers.contains(g.toString())) {
+      return ~ggInitialG & 1;
+    }
+    return ggInitialG;
+  }
+
+  String s(String h) {
+    final match = RegExp(r'(..)(.)$').firstMatch(h);
+    if (match == null) return '';
+    final g = int.parse(match.group(2)! + match.group(1)!, radix: 16);
+    return g.toString();
+  }
+
+  Future<void> ensureGg() async {
+    final now = DateTime.now();
+    if (now.difference(ggCacheTime).inMinutes < 1 &&
+        ggB != null &&
+        ggNumbers.isNotEmpty) {
+      return;
+    }
+    final res = await getText(
+      'https://ltn.$baseDomain/gg.js?_=${DateTime.now().millisecondsSinceEpoch}',
+    );
+    final text = res.bodyText();
+    final nums = RegExp(r'(?<=case )\d+').allMatches(text);
+    ggNumbers = nums.map((m) => m.group(0)!).toList();
+    ggB = RegExp(r"(?<=b: ')\d+").firstMatch(text)?.group(0);
+    ggInitialG = int.tryParse(
+            RegExp(r'(?<=var o = )\d+').firstMatch(text)?.group(0) ?? '1') ??
+        1;
+    ggCacheTime = now;
+  }
+
+  String subdomainFromUrl(String url, String? base) {
+    var retval = base ?? 'b';
+    final m = RegExp(r'/[0-9a-f]{61}([0-9a-f]{2})([0-9a-f])').firstMatch(url);
+    if (m == null) return 'a';
+    final g = int.parse(m[2]! + m[1]!, radix: 16);
+    final ch = String.fromCharCode(97 + mm(g));
+    if (retval == 'tn') return '$ch$retval';
+    if (retval == 'w') {
+      if (ch == 'a') return '${retval}1';
+      if (ch == 'b') return '${retval}2';
+    }
+    return retval;
+  }
+
+  String realFullPathFromHash(String hash) {
+    final m = RegExp(r'^.*(..)(.)$').firstMatch(hash);
+    if (m == null) return hash;
+    return '${m.group(2)}/${m.group(1)}/$hash';
+  }
+
+  String fullPathFromHash(String hash) {
+    return '${ggB ?? '0'}/${s(hash)}/$hash';
+  }
+
+  String urlFromUrl(String url, String? base) {
+    return url.replaceFirst(
+        'https://', 'https://${subdomainFromUrl(url, base)}.');
+  }
+
+  String urlFromHash(Map<String, dynamic> file, String? dir, String? ext) {
+    final name = (file['name'] ?? '').toString();
+    final hash = (file['hash'] ?? '').toString();
+    ext ??= dir ??= (name.contains('.') ? name.split('.').last : 'jpg');
+    dir ??= 'images';
+    if (dir.contains('small')) {
+      final u = 'https://$baseDomain/$dir/${realFullPathFromHash(hash)}.$ext';
+      return urlFromUrl(u, 'tn');
+    }
+    final u = 'https://$baseDomain/${fullPathFromHash(hash)}.$ext';
+    return urlFromUrl(u, 'w');
+  }
+
+  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
+  _recreateDir(comicDir);
+  final pagesDir = Directory(p.join(comicDir.path, 'pages'));
+  pagesDir.createSync(recursive: true);
+
+  final total = (cover.isEmpty ? 0 : 1) + files.length;
+  ctx.setTotal(total);
+
+  if (cover.isNotEmpty) {
+    ctx.setMessage('download cover');
+    await _downloadToFile(
+      Uri.parse(cover),
+      File(p.join(comicDir.path, 'cover.jpg')),
+      headers: headers,
+      timeout: const Duration(minutes: 2),
+      maxBytes: 20 * 1024 * 1024,
+    );
+    ctx.advance();
+  }
+
+  await ensureGg();
+
+  var idx = 0;
+  for (final f in files) {
+    idx++;
+    ctx.setMessage('download pages ($idx/${files.length})');
+    final uriWebp = Uri.parse(urlFromHash(f, 'webp', null));
+    String ext = 'webp';
+    try {
+      await _downloadToFile(
+        uriWebp,
+        File(p.join(pagesDir.path, '$idx.$ext')),
+        headers: headers,
+        timeout: const Duration(minutes: 5),
+        maxBytes: 50 * 1024 * 1024,
+      );
+    } catch (_) {
+      final name = (f['name'] ?? '').toString();
+      ext = name.contains('.') ? name.split('.').last : 'jpg';
+      final uri2 = Uri.parse(urlFromHash(f, null, null));
+      await _downloadToFile(
+        uri2,
+        File(p.join(pagesDir.path, '$idx.$ext')),
+        headers: headers,
+        timeout: const Duration(minutes: 5),
+        maxBytes: 50 * 1024 * 1024,
+      );
+    }
+    ctx.advance();
+  }
+
+  final hitomiComicMap = <String, dynamic>{
+    'id': rawId,
+    'name': title.isEmpty ? id : title,
+    'type': type,
+    'artists': artists.isEmpty ? ['N/A'] : artists,
+    'lang': lang,
+    'time': time,
+    'files': files,
+  };
+
+  final downloadedJson = <String, dynamic>{
+    'comic': hitomiComicMap,
+    'size': null,
+    'link': 'https://hitomi.la/reader/$rawId.html',
+    'cover': cover,
+  };
+
+  return _DownloadedComicData(
+    id: id,
+    title: hitomiComicMap['name'] as String,
+    subtitle: artists.isEmpty ? 'N/A' : artists.first,
+    type: 3,
+    tags: const [],
+    directory: directory,
+    downloadedJson: downloadedJson,
+  );
+}
+
+Future<_DownloadedComicData> _downloadHtmanga(
+  Directory storage,
+  Map<String, dynamic>? auth,
+  String target,
+  Map<String, dynamic> params,
+  _TaskCtx ctx,
+) async {
+  final baseUrl = (auth?['baseUrl'] ?? '').toString().trim();
+  if (baseUrl.isEmpty) {
+    throw StateError('missing auth.baseUrl');
+  }
+  final cookie = (auth?['cookie'] ?? auth?['cookies'] ?? '').toString().trim();
+
+  final m = RegExp(r'\d+').firstMatch(target);
+  final rawId = (m?.group(0) ?? target).trim();
+  if (rawId.isEmpty) throw StateError('invalid target');
+
+  final id = 'Ht$rawId';
+  final directory = _safeId(id);
+
+  final headers = <String, String>{
+    'user-agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    if (cookie.isNotEmpty) 'cookie': cookie,
+  };
+
+  ctx.setMessage('fetch comic info');
+  final infoUrl = Uri.parse('$baseUrl/photos-index-page-1-aid-$rawId.html');
+  final infoRes = await _httpGetBytesWithRetry(
+    infoUrl,
+    headers: headers,
+    timeout: const Duration(seconds: 20),
+    retries: 2,
+    maxBytes: 6 * 1024 * 1024,
+  );
+  final doc = html.parse(infoRes.bodyText());
+
+  final name = (doc.querySelector('div.userwrap > h2')?.text ?? '').trim();
+  final coverSrc = doc
+      .querySelector('div.userwrap > div.asTB > div.asTBcell.uwthumb > img')
+      ?.attributes['src'];
+  final coverUrl = coverSrc == null ? '' : _normalizeHttpUrl(coverSrc);
+
+  final labels = doc.querySelectorAll('div.asTBcell.uwconn > label');
+  final category =
+      labels.isNotEmpty ? labels[0].text.split('：').last.trim() : '';
+  final pagesText = labels.length > 1 ? labels[1].text.split('：').last : '';
+  final pages =
+      int.tryParse(RegExp(r'\d+').firstMatch(pagesText)?.group(0) ?? '0') ?? 0;
+
+  final tagsDom = doc.querySelectorAll('a.tagshow');
+  final tagsMap = <String, String>{};
+  for (final t in tagsDom) {
+    final text = t.text.trim();
+    final link = (t.attributes['href'] ?? '').trim();
+    if (text.isEmpty) continue;
+    tagsMap[text] = link;
+  }
+
+  final description =
+      (doc.querySelector('div.asTBcell.uwconn > p')?.text ?? '').trim();
+  final uploader =
+      (doc.querySelector('div.asTBcell.uwuinfo > a > p')?.text ?? '').trim();
+
+  var avatar =
+      (doc.querySelector('div.asTBcell.uwuinfo > a > img')?.attributes['src'] ??
+              '')
+          .trim();
+  if (avatar.isNotEmpty && !avatar.startsWith('http')) {
+    avatar = '$baseUrl/$avatar';
+  }
+  avatar = _normalizeHttpUrl(avatar);
+
+  final uploadNumText =
+      (doc.querySelector('div.asTBcell.uwuinfo > p > font')?.text ?? '0');
+  final uploadNum = int.tryParse(uploadNumText.trim()) ?? 0;
+
+  ctx.setMessage('fetch images');
+  final galleryUrl = Uri.parse('$baseUrl/photos-gallery-aid-$rawId.html');
+  final galleryRes = await _httpGetBytesWithRetry(
+    galleryUrl,
+    headers: headers,
+    timeout: const Duration(seconds: 20),
+    retries: 2,
+    maxBytes: 20 * 1024 * 1024,
+  );
+  final matches =
+      RegExp(r'(?<=//)[\w./\[\]()-]+').allMatches(galleryRes.bodyText());
+  final imageUrls = <String>[];
+  for (final m in matches) {
+    final u = m.group(0);
+    if (u == null || u.trim().isEmpty) continue;
+    imageUrls.add('https://$u');
+  }
+
+  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
+  _recreateDir(comicDir);
+  final pagesDir = Directory(p.join(comicDir.path, 'pages'));
+  pagesDir.createSync(recursive: true);
+
+  final total = (coverUrl.isEmpty ? 0 : 1) + imageUrls.length;
+  ctx.setTotal(total);
+
+  if (coverUrl.isNotEmpty) {
+    ctx.setMessage('download cover');
+    await _downloadToFile(
+      Uri.parse(coverUrl),
+      File(p.join(comicDir.path, 'cover.jpg')),
+      headers: headers,
+      timeout: const Duration(minutes: 2),
+      maxBytes: 20 * 1024 * 1024,
+    );
+    ctx.advance();
+  }
+
+  var idx = 0;
+  for (final u in imageUrls) {
+    idx++;
+    ctx.setMessage('download pages ($idx/${imageUrls.length})');
+    final uri = Uri.parse(u);
+    final ext = _guessExtFromUrl(uri);
+    final outPath = p.join(pagesDir.path, '$idx.$ext');
+    await _downloadToFile(
+      uri,
+      File(outPath),
+      headers: headers,
+      timeout: const Duration(minutes: 5),
+      maxBytes: 50 * 1024 * 1024,
+    );
+    ctx.advance();
+  }
+
+  final comicJson = <String, dynamic>{
+    'id': rawId,
+    'coverPath': coverUrl,
+    'name': name.isEmpty ? id : name,
+    'category': category,
+    'pages': pages,
+    'tags': tagsMap,
+    'description': description,
+    'uploader': uploader,
+    'avatar': avatar,
+    'uploadNum': uploadNum,
+  };
+
+  final downloadedJson = <String, dynamic>{
+    'comic': comicJson,
+    'size': null,
+  };
+
+  return _DownloadedComicData(
+    id: id,
+    title: (comicJson['name'] ?? '').toString(),
+    subtitle: uploader,
+    type: 4,
+    tags: tagsMap.keys.toList(),
+    directory: directory,
+    downloadedJson: downloadedJson,
+  );
+}
+
+Future<_DownloadedComicData> _downloadNhentai(
+  Directory storage,
+  Map<String, dynamic>? auth,
+  String target,
+  Map<String, dynamic> params,
+  _TaskCtx ctx,
+) async {
+  final baseUrl = (auth?['baseUrl'] ?? 'https://nhentai.net').toString().trim();
+  final m = RegExp(r'\d+').firstMatch(target);
+  final rawId = (m?.group(0) ?? target).trim();
+  if (rawId.isEmpty) throw StateError('invalid target');
+
+  final id = 'nhentai$rawId';
+  final directory = _safeId(id);
+
+  final headers = <String, String>{
+    'user-agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'referer': '$baseUrl/',
+  };
+
+  String combineSpans(dynamic element) {
+    try {
+      final children = (element?.children ?? []) as List;
+      var res = '';
+      for (final c in children) {
+        res += (c.text ?? '').toString();
+      }
+      return res.trim();
+    } catch (_) {
+      return (element?.text ?? '').toString().trim();
+    }
+  }
+
+  ctx.setMessage('fetch comic info');
+  final infoRes = await _httpGetBytesWithRetry(
+    Uri.parse('$baseUrl/g/$rawId/'),
+    headers: headers,
+    timeout: const Duration(seconds: 20),
+    retries: 2,
+    maxBytes: 8 * 1024 * 1024,
+  );
+  final doc = html.parse(infoRes.bodyText());
+
+  var cover =
+      (doc.querySelector('div#cover > a > img')?.attributes['data-src'] ?? '')
+          .trim();
+  cover = _normalizeHttpUrl(cover);
+
+  final title = combineSpans(doc.querySelector('h1.title'));
+  final tags = <String>[];
+  for (final span in doc.querySelectorAll('div.tag-container span.name')) {
+    final t = span.text.trim();
+    if (t.isNotEmpty) tags.add(t);
+  }
+
+  ctx.setMessage('fetch images');
+  final page1Res = await _httpGetBytesWithRetry(
+    Uri.parse('$baseUrl/g/$rawId/1/'),
+    headers: headers,
+    timeout: const Duration(seconds: 20),
+    retries: 2,
+    maxBytes: 10 * 1024 * 1024,
+  );
+  final doc1 = html.parse(page1Res.bodyText());
+  final scripts = doc1.querySelectorAll('script');
+  final script0 = scripts
+      .map((e) => e.text)
+      .firstWhere((t) => t.contains('window._n_app'), orElse: () => '');
+  final script1 = scripts
+      .map((e) => e.text)
+      .firstWhere((t) => t.contains('window._gallery'), orElse: () => '');
+  if (script0.isEmpty || script1.isEmpty) {
+    throw StateError('failed to parse nhentai page');
+  }
+
+  Map<String, dynamic> parseJavaScriptJson(String jsCode) {
+    final part = jsCode.split('JSON.parse(\"');
+    if (part.length < 2) throw StateError('missing JSON.parse');
+    final jsonText = part[1].split('\");').first;
+    final decodedJsonText =
+        jsonText.replaceAll('\\u0022', '\"').replaceAll('\\u005C', '\\\\');
+    final decoded = jsonDecode(decodedJsonText);
+    if (decoded is! Map) throw StateError('invalid gallery json');
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  final galleryData = parseJavaScriptJson(script1);
+  final mediaServer = script0.split('image_cdn_urls: [\"')[1].split('\"')[0];
+  final mediaId = (galleryData['media_id'] ?? '').toString();
+  if (mediaId.isEmpty) throw StateError('missing media_id');
+
+  final pages = galleryData['images'] is Map
+      ? (galleryData['images'] as Map)['pages']
+      : null;
+  if (pages is! List) throw StateError('missing images.pages');
+
+  final imageUrls = <String>[];
+  for (final raw in pages) {
+    if (raw is! Map) continue;
+    final t = (raw['t'] ?? '').toString();
+    final extension = switch (t) {
+      'j' => 'jpg',
+      'p' => 'png',
+      'g' => 'gif',
+      'w' => 'webp',
+      _ => 'jpg',
+    };
+    final n = imageUrls.length + 1;
+    imageUrls.add('https://$mediaServer/galleries/$mediaId/$n.$extension');
+  }
+
+  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
+  _recreateDir(comicDir);
+  final pagesDir = Directory(p.join(comicDir.path, 'pages'));
+  pagesDir.createSync(recursive: true);
+
+  final total = (cover.isEmpty ? 0 : 1) + imageUrls.length;
+  ctx.setTotal(total);
+
+  if (cover.isNotEmpty) {
+    ctx.setMessage('download cover');
+    await _downloadToFile(
+      Uri.parse(cover),
+      File(p.join(comicDir.path, 'cover.jpg')),
+      headers: headers,
+      timeout: const Duration(minutes: 2),
+      maxBytes: 20 * 1024 * 1024,
+    );
+    ctx.advance();
+  }
+
+  var idx = 0;
+  for (final u in imageUrls) {
+    idx++;
+    ctx.setMessage('download pages ($idx/${imageUrls.length})');
+    final uri = Uri.parse(u);
+    final ext = _guessExtFromUrl(uri);
+    await _downloadToFile(
+      uri,
+      File(p.join(pagesDir.path, '$idx.$ext')),
+      headers: headers,
+      timeout: const Duration(minutes: 5),
+      maxBytes: 50 * 1024 * 1024,
+    );
+    ctx.advance();
+  }
+
+  final downloadedJson = <String, dynamic>{
+    'comicID': id,
+    'title': title.isEmpty ? id : title,
+    'size': null,
+    'cover': cover,
+    'tags': tags,
+  };
+
+  return _DownloadedComicData(
+    id: id,
+    title: downloadedJson['title'] as String,
+    subtitle: '',
+    type: 5,
+    tags: tags,
+    directory: directory,
+    downloadedJson: downloadedJson,
+  );
+}
 
 Handler buildHandler({
   required String storageDir,
@@ -20,6 +2041,9 @@ Handler buildHandler({
   final dbFile = File(p.join(storage.path, 'library.db'));
   final db = sqlite3.open(dbFile.path);
   _initDb(db);
+
+  final taskRunner = _TaskRunner(db: db, storage: storage);
+  taskRunner.markStaleRunningTasksFailed();
 
   final extracting = <String, Future<void>>{};
 
@@ -95,6 +2119,99 @@ Handler buildHandler({
       // ignore
     }
     return total;
+  }
+
+  Future<Response> ingestComicZip({
+    required Map<String, dynamic> meta,
+    required String zipPath,
+    String? coverOverridePath,
+  }) async {
+    final id = (meta['id'] ?? '').toString();
+    if (id.isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing meta.id'});
+    }
+
+    final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
+    comicDir.createSync(recursive: true);
+
+    final pagesDir = Directory(p.join(comicDir.path, 'pages'));
+    if (pagesDir.existsSync()) {
+      try {
+        pagesDir.deleteSync(recursive: true);
+      } catch (_) {
+        // ignore
+      }
+    }
+    pagesDir.createSync(recursive: true);
+
+    InputFileStream? input;
+    try {
+      input = InputFileStream(zipPath);
+      final archive = ZipDecoder().decodeBuffer(input);
+      await extractArchiveToDisk(archive, pagesDir.path);
+    } finally {
+      try {
+        input?.close();
+      } catch (_) {
+        // ignore
+      }
+      try {
+        File(zipPath).deleteSync();
+      } catch (_) {
+        // ignore
+      }
+    }
+
+    String? coverPath;
+    if (coverOverridePath != null) {
+      final out = File(p.join(comicDir.path, 'cover.jpg'));
+      if (p.normalize(coverOverridePath) != p.normalize(out.path)) {
+        try {
+          if (out.existsSync()) out.deleteSync();
+          await File(coverOverridePath).openRead().pipe(out.openWrite());
+        } catch (_) {
+          // ignore
+        }
+      }
+      if (out.existsSync()) {
+        coverPath = out.path;
+      }
+    }
+
+    if (coverPath == null) {
+      final extractedCover = File(p.join(pagesDir.path, 'cover.jpg'));
+      if (extractedCover.existsSync()) {
+        coverPath = extractedCover.path;
+      }
+    }
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final metaJson = jsonEncode(meta);
+    final sizeBytes = directorySizeBytes(pagesDir);
+
+    db.execute(
+      '''
+      insert or replace into comics
+      (id, title, subtitle, type, tags, directory, time, size, meta_json, zip_path, cover_path, zip_sha256)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ''',
+      [
+        id,
+        (meta['title'] ?? '').toString(),
+        (meta['subtitle'] ?? '').toString(),
+        int.tryParse((meta['type'] ?? '').toString()) ?? -1,
+        jsonEncode(meta['tags'] ?? []),
+        (meta['directory'] ?? '').toString(),
+        now,
+        sizeBytes,
+        metaJson,
+        null,
+        coverPath,
+        null,
+      ],
+    );
+
+    return _json(200, {'ok': true, 'id': id});
   }
 
   Future<void> ensureExtracted(String id, String zipPath) async {
@@ -332,6 +2449,77 @@ Handler buildHandler({
     });
   }
 
+  api.post('/v1/comics/fetch', (Request req) async {
+    final body = await req.readAsString();
+    if (body.trim().isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing body'});
+    }
+
+    Object? decoded;
+    try {
+      decoded = jsonDecode(body);
+    } catch (_) {
+      return _json(400, {'ok': false, 'error': 'invalid json'});
+    }
+    if (decoded is! Map) {
+      return _json(400, {'ok': false, 'error': 'invalid json'});
+    }
+    final json = Map<String, dynamic>.from(decoded);
+
+    final zipUrl = (json['zipUrl'] ?? '').toString().trim();
+    if (zipUrl.isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing zipUrl'});
+    }
+
+    final metaRaw = json['meta'];
+    if (metaRaw is! Map) {
+      return _json(400, {'ok': false, 'error': 'missing meta'});
+    }
+    final meta = Map<String, dynamic>.from(metaRaw);
+
+    Map<String, String>? headers;
+    final headersRaw = json['headers'];
+    if (headersRaw is Map) {
+      final tmp = <String, String>{};
+      for (final e in headersRaw.entries) {
+        final k = e.key.toString().trim();
+        final v = (e.value ?? '').toString();
+        if (k.isEmpty) continue;
+        if (k.length > 128) continue;
+        if (v.length > 4096) continue;
+        tmp[k] = v;
+      }
+      if (tmp.isNotEmpty) headers = tmp;
+    }
+
+    Uri uri;
+    try {
+      uri = Uri.parse(zipUrl);
+    } catch (_) {
+      return _json(400, {'ok': false, 'error': 'invalid zipUrl'});
+    }
+
+    final tmpDir = Directory.systemTemp.createTempSync('pica_server_fetch_');
+    final outZip = File(p.join(tmpDir.path, 'comic.zip'));
+    try {
+      await _downloadToFile(
+        uri,
+        outZip,
+        headers: headers,
+        maxBytes: 4 * 1024 * 1024 * 1024,
+      );
+      return await ingestComicZip(meta: meta, zipPath: outZip.path);
+    } catch (e) {
+      return _json(500, {'ok': false, 'error': 'fetch failed: $e'});
+    } finally {
+      try {
+        tmpDir.deleteSync(recursive: true);
+      } catch (_) {
+        // ignore
+      }
+    }
+  });
+
   Future<Map<String, dynamic>?> readJsonMap(Request req) async {
     final body = await req.readAsString();
     if (body.trim().isEmpty) return null;
@@ -339,6 +2527,166 @@ Handler buildHandler({
     if (decoded is! Map) return null;
     return Map<String, dynamic>.from(decoded);
   }
+
+  bool isValidSource(String source) {
+    return const {
+      'picacg',
+      'ehentai',
+      'jm',
+      'hitomi',
+      'htmanga',
+      'nhentai',
+    }.contains(source);
+  }
+
+  api.put('/v1/auth/<source>', (Request req, String source) async {
+    source = source.trim();
+    if (!isValidSource(source)) {
+      return _json(400, {'ok': false, 'error': 'invalid source'});
+    }
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      insert or replace into auth_sessions (source, data_json, updated_at)
+      values (?, ?, ?)
+      ''',
+      [source, jsonEncode(json), now],
+    );
+    return _json(200, {'ok': true});
+  });
+
+  api.get('/v1/auth/<source>', (Request req, String source) {
+    source = source.trim();
+    if (!isValidSource(source)) {
+      return _json(400, {'ok': false, 'error': 'invalid source'});
+    }
+    final row = db.select(
+      'select updated_at from auth_sessions where source = ?',
+      [source],
+    ).firstOrNull;
+    if (row == null) {
+      return _json(200, {'ok': true, 'source': source, 'exists': false});
+    }
+    return _json(200, {
+      'ok': true,
+      'source': source,
+      'exists': true,
+      'updatedAt': row['updated_at'],
+    });
+  });
+
+  api.get('/v1/auth', (Request req) {
+    final rows = db.select(
+      'select source, updated_at from auth_sessions order by source asc',
+    );
+    return _json(200, {
+      'ok': true,
+      'items': rows
+          .map((r) => {
+                'source': r['source'],
+                'updatedAt': r['updated_at'],
+              })
+          .toList(),
+    });
+  });
+
+  api.post('/v1/tasks/download', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+
+    final source = (json['source'] ?? '').toString().trim();
+    final target = (json['target'] ?? '').toString().trim();
+    if (!isValidSource(source)) {
+      return _json(400, {'ok': false, 'error': 'invalid source'});
+    }
+    if (target.isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing target'});
+    }
+
+    final epsRaw = json['eps'];
+    if (epsRaw is List) {
+      final eps = <int>[];
+      for (final e in epsRaw) {
+        final v = int.tryParse(e.toString());
+        if (v == null) continue;
+        if (v < 0) continue;
+        eps.add(v);
+      }
+      json['eps'] = eps;
+    }
+
+    final taskId = taskRunner.createDownloadTask(json);
+    return _json(200, {'ok': true, 'taskId': taskId});
+  });
+
+  api.get('/v1/tasks', (Request req) {
+    final limit = int.tryParse(req.url.queryParameters['limit'] ?? '50') ?? 50;
+    final n = limit.clamp(1, 200).toInt();
+    final rows = db.select(
+      '''
+      select id, type, source, target, status, progress, total, message, comic_id, created_at, updated_at
+      from tasks
+      order by created_at desc
+      limit ?
+      ''',
+      [n],
+    );
+    return _json(200, {
+      'ok': true,
+      'tasks': rows
+          .map((r) => {
+                'id': r['id'],
+                'type': r['type'],
+                'source': r['source'],
+                'target': r['target'],
+                'status': r['status'],
+                'progress': r['progress'],
+                'total': r['total'],
+                'message': r['message'],
+                'comicId': r['comic_id'],
+                'createdAt': r['created_at'],
+                'updatedAt': r['updated_at'],
+              })
+          .toList(),
+    });
+  });
+
+  api.get('/v1/tasks/<id>', (Request req, String id) {
+    final row = db.select(
+      '''
+      select id, type, source, target, params_json, status, progress, total, message, comic_id, created_at, updated_at
+      from tasks
+      where id = ?
+      ''',
+      [id],
+    ).firstOrNull;
+    if (row == null) return _json(404, {'ok': false, 'error': 'not found'});
+    Object? params;
+    try {
+      params = jsonDecode((row['params_json'] as String));
+    } catch (_) {
+      params = null;
+    }
+    return _json(200, {
+      'ok': true,
+      'task': {
+        'id': row['id'],
+        'type': row['type'],
+        'source': row['source'],
+        'target': row['target'],
+        'params': params,
+        'status': row['status'],
+        'progress': row['progress'],
+        'total': row['total'],
+        'message': row['message'],
+        'comicId': row['comic_id'],
+        'createdAt': row['created_at'],
+        'updatedAt': row['updated_at'],
+      }
+    });
+  });
 
   api.get('/v1/favorites/folders', (Request req) {
     ensureFavoriteFolder(defaultFavoriteFolder);
@@ -763,74 +3111,19 @@ Handler buildHandler({
     final zipPath = p.join(comicDir.path, 'comic.zip');
     await zipPart.saveTo(zipPath);
 
-    final pagesDir = Directory(p.join(comicDir.path, 'pages'));
-    if (pagesDir.existsSync()) {
-      try {
-        pagesDir.deleteSync(recursive: true);
-      } catch (_) {
-        // ignore
-      }
-    }
-    pagesDir.createSync(recursive: true);
-
-    InputFileStream? input;
-    try {
-      input = InputFileStream(zipPath);
-      final archive = ZipDecoder().decodeBuffer(input);
-      await extractArchiveToDisk(archive, pagesDir.path);
-    } finally {
-      try {
-        input?.close();
-      } catch (_) {
-        // ignore
-      }
-      try {
-        File(zipPath).deleteSync();
-      } catch (_) {
-        // ignore
-      }
-    }
-
-    String? coverPath;
+    String? coverOverridePath;
     final coverPart = parts.files['cover'];
     if (coverPart != null) {
-      coverPath = p.join(comicDir.path, 'cover.jpg');
+      final coverPath = p.join(comicDir.path, 'cover.jpg');
       await coverPart.saveTo(coverPath);
-    } else {
-      final extractedCover = File(p.join(pagesDir.path, 'cover.jpg'));
-      if (extractedCover.existsSync()) {
-        coverPath = extractedCover.path;
-      }
+      coverOverridePath = coverPath;
     }
 
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final metaJson = jsonEncode(meta);
-
-    final sizeBytes = directorySizeBytes(pagesDir);
-
-    db.execute(
-      '''
-      insert or replace into comics
-      (id, title, subtitle, type, tags, directory, time, size, meta_json, zip_path, cover_path, zip_sha256)
-      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ''',
-      [
-        id,
-        (meta['title'] ?? '').toString(),
-        (meta['subtitle'] ?? '').toString(),
-        int.tryParse((meta['type'] ?? '').toString()) ?? -1,
-        jsonEncode(meta['tags'] ?? []),
-        (meta['directory'] ?? '').toString(),
-        now,
-        sizeBytes,
-        metaJson,
-        null,
-        coverPath,
-        null,
-      ],
+    return ingestComicZip(
+      meta: meta,
+      zipPath: zipPath,
+      coverOverridePath: coverOverridePath,
     );
-
-    return _json(200, {'ok': true, 'id': id});
   });
 
   api.get('/v1/comics', (Request req) {
@@ -974,6 +3267,31 @@ void _initDb(Database db) {
       zip_path text,
       cover_path text,
       zip_sha256 text
+    );
+  ''');
+
+  db.execute('''
+    create table if not exists auth_sessions (
+      source text primary key,
+      data_json text not null,
+      updated_at int not null
+    );
+  ''');
+
+  db.execute('''
+    create table if not exists tasks (
+      id text primary key,
+      type text not null,
+      source text not null,
+      target text not null,
+      params_json text not null,
+      status text not null,
+      progress int not null,
+      total int not null,
+      message text,
+      comic_id text,
+      created_at int not null,
+      updated_at int not null
     );
   ''');
 
