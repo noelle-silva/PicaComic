@@ -20,6 +20,24 @@ import 'package:sqlite3/sqlite3.dart';
 
 const _picaServerBuild = '2026-02-21.6';
 
+enum _TaskStopMode {
+  pause,
+  cancel,
+}
+
+typedef _StopCheck = _TaskStopMode? Function();
+
+class _TaskStopped implements Exception {
+  final _TaskStopMode mode;
+  const _TaskStopped(this.mode);
+
+  @override
+  String toString() => switch (mode) {
+        _TaskStopMode.pause => 'task paused',
+        _TaskStopMode.cancel => 'task canceled',
+      };
+}
+
 class _RetryPolicy {
   final int fileRetriesDefault;
   final Map<String, int> fileRetriesBySource;
@@ -55,6 +73,7 @@ Future<void> _downloadToFile(
   Duration timeout = const Duration(minutes: 20),
   int? maxBytes,
   int retries = 0,
+  _StopCheck? stopCheck,
 }) async {
   if (uri.scheme != 'http' && uri.scheme != 'https') {
     throw ArgumentError('unsupported scheme');
@@ -67,6 +86,9 @@ Future<void> _downloadToFile(
 
   Object? lastErr;
   for (var attempt = 0; attempt <= retries; attempt++) {
+    final stop = stopCheck?.call();
+    if (stop != null) throw _TaskStopped(stop);
+
     if (outFile.existsSync()) {
       try {
         outFile.deleteSync();
@@ -106,6 +128,9 @@ Future<void> _downloadToFile(
       var received = 0;
       try {
         await for (final chunk in res) {
+          final stop = stopCheck?.call();
+          if (stop != null) throw _TaskStopped(stop);
+
           received += chunk.length;
           if (maxBytes != null && received > maxBytes) {
             throw StateError('file too large');
@@ -119,6 +144,16 @@ Future<void> _downloadToFile(
       return;
     } catch (e) {
       lastErr = e;
+      if (e is _TaskStopped) {
+        if (outFile.existsSync()) {
+          try {
+            outFile.deleteSync();
+          } catch (_) {
+            // ignore
+          }
+        }
+        rethrow;
+      }
       if (attempt >= retries) rethrow;
       if (e is ArgumentError) rethrow;
       if (e is StateError) rethrow;
@@ -181,12 +216,16 @@ Future<_HttpRes> _httpGetBytes(
   Map<String, String>? headers,
   Duration timeout = const Duration(seconds: 20),
   int? maxBytes,
+  _StopCheck? stopCheck,
 }) async {
   if (uri.scheme != 'http' && uri.scheme != 'https') {
     throw ArgumentError('unsupported scheme');
   }
   final client = HttpClient()..connectionTimeout = timeout;
   try {
+    final stop = stopCheck?.call();
+    if (stop != null) throw _TaskStopped(stop);
+
     final req = await client.getUrl(uri).timeout(timeout);
     req.followRedirects = true;
     req.maxRedirects = 5;
@@ -205,6 +244,9 @@ Future<_HttpRes> _httpGetBytes(
     final chunks = <int>[];
     var received = 0;
     await for (final chunk in res) {
+      final stop = stopCheck?.call();
+      if (stop != null) throw _TaskStopped(stop);
+
       received += chunk.length;
       if (maxBytes != null && received > maxBytes) {
         throw StateError('body too large');
@@ -228,15 +270,20 @@ Future<_HttpRes> _httpGetBytesWithRetry(
   Duration timeout = const Duration(seconds: 20),
   int retries = 3,
   int? maxBytes,
+  _StopCheck? stopCheck,
 }) async {
   Object? lastErr;
   for (var i = 0; i <= retries; i++) {
+    final stop = stopCheck?.call();
+    if (stop != null) throw _TaskStopped(stop);
+
     try {
       final res = await _httpGetBytes(
         uri,
         headers: headers,
         timeout: timeout,
         maxBytes: maxBytes,
+        stopCheck: stopCheck,
       );
       if (res.statusCode >= 200 && res.statusCode < 300) {
         return res;
@@ -257,13 +304,32 @@ Future<_HttpRes> _httpGetBytesWithRetry(
 class _TaskCtx {
   final Database db;
   final String taskId;
+  final _StopCheck stopCheck;
 
   int _progress = 0;
   int _total = 0;
   String? _message;
   int _lastWriteMs = 0;
 
-  _TaskCtx(this.db, this.taskId);
+  _TaskCtx(this.db, this.taskId, this.stopCheck) {
+    final row = db.select(
+      'select progress, total, message from tasks where id = ?',
+      [taskId],
+    ).firstOrNull;
+    if (row != null) {
+      _progress = (row['progress'] as int?) ?? 0;
+      _total = (row['total'] as int?) ?? 0;
+      _message = row['message'] as String?;
+    }
+  }
+
+  int get progress => _progress;
+  int get total => _total;
+
+  void throwIfStopped() {
+    final stop = stopCheck();
+    if (stop != null) throw _TaskStopped(stop);
+  }
 
   void setTotal(int total) {
     if (total < 0) total = 0;
@@ -273,6 +339,12 @@ class _TaskCtx {
 
   void setMessage(String? message) {
     _message = message;
+    _write(force: true);
+  }
+
+  void ensureProgressAtLeast(int v) {
+    if (v <= _progress) return;
+    _progress = v;
     _write(force: true);
   }
 
@@ -323,11 +395,34 @@ class _TaskRunner {
 
   final Queue<String> _queue = Queue();
   final Set<String> _running = <String>{};
+  final Map<String, _TaskStopMode> _stopByTaskId = <String, _TaskStopMode>{};
+
+  int _maxConcurrent = 1;
 
   _TaskRunner({
     required this.db,
     required this.storage,
   });
+
+  int get maxConcurrent => _maxConcurrent;
+
+  void setMaxConcurrent(int v) {
+    final next = v.clamp(1, 20);
+    if (next == _maxConcurrent) return;
+    _maxConcurrent = next;
+    _pump();
+  }
+
+  void enqueueQueuedFromDb() {
+    final rows = db.select(
+      "select id from tasks where status = 'queued' order by created_at asc",
+    );
+    for (final r in rows) {
+      final id = (r['id'] ?? '').toString();
+      if (id.isEmpty) continue;
+      enqueue(id);
+    }
+  }
 
   void markStaleRunningTasksFailed() {
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -341,11 +436,38 @@ class _TaskRunner {
     );
   }
 
+  bool _comicExists(String id) {
+    final row = db
+        .select('select id from comics where id = ? limit 1', [id]).firstOrNull;
+    return row != null;
+  }
+
+  bool _activeTaskExists(String source, String target) {
+    final row = db.select(
+      '''
+      select id from tasks
+      where source = ? and target = ?
+        and status in ('queued','running','paused')
+      limit 1
+      ''',
+      [source, target],
+    ).firstOrNull;
+    return row != null;
+  }
+
   String createDownloadTask(Map<String, dynamic> params) {
     final source = (params['source'] ?? '').toString().trim();
     final target = (params['target'] ?? '').toString().trim();
     if (source.isEmpty) throw ArgumentError('missing source');
     if (target.isEmpty) throw ArgumentError('missing target');
+
+    final canonicalId = _canonicalComicId(source: source, target: target);
+    if (canonicalId.isNotEmpty && _comicExists(canonicalId)) {
+      throw StateError('already downloaded');
+    }
+    if (_activeTaskExists(source, target)) {
+      throw StateError('task already exists');
+    }
 
     final id = _randomId(18);
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -381,12 +503,105 @@ class _TaskRunner {
     _pump();
   }
 
+  void _removeFromQueue(String taskId) {
+    if (_queue.isEmpty) return;
+    _queue.removeWhere((e) => e == taskId);
+  }
+
+  bool isRunning(String taskId) => _running.contains(taskId);
+
+  _TaskStopMode? stopMode(String taskId) => _stopByTaskId[taskId];
+
+  Directory taskTempDir(String taskId) =>
+      Directory(p.join(storage.path, 'tasks', taskId));
+
+  void _tryDeleteTaskTemp(String taskId) {
+    final dir = taskTempDir(taskId);
+    if (!dir.existsSync()) return;
+    try {
+      dir.deleteSync(recursive: true);
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  void pauseTask(String taskId) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      update tasks
+      set status = 'paused', updated_at = ?
+      where id = ? and status in ('queued','running')
+      ''',
+      [now, taskId],
+    );
+    _removeFromQueue(taskId);
+    if (isRunning(taskId)) {
+      _stopByTaskId[taskId] = _TaskStopMode.pause;
+    }
+  }
+
+  void resumeTask(String taskId) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      update tasks
+      set status = 'queued', updated_at = ?
+      where id = ? and status in ('paused','failed')
+      ''',
+      [now, taskId],
+    );
+    _stopByTaskId.remove(taskId);
+    enqueue(taskId);
+  }
+
+  void cancelTask(String taskId) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      update tasks
+      set status = 'canceled', message = null, updated_at = ?
+      where id = ? and status in ('queued','running','paused','failed')
+      ''',
+      [now, taskId],
+    );
+    _removeFromQueue(taskId);
+    if (isRunning(taskId)) {
+      _stopByTaskId[taskId] = _TaskStopMode.cancel;
+      return;
+    }
+    _tryDeleteTaskTemp(taskId);
+  }
+
+  void retryTask(String taskId) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      update tasks
+      set status = 'queued', message = null, updated_at = ?
+      where id = ? and status in ('failed','canceled','paused')
+      ''',
+      [now, taskId],
+    );
+    _stopByTaskId.remove(taskId);
+    enqueue(taskId);
+  }
+
+  bool deleteTask(String taskId) {
+    if (isRunning(taskId)) return false;
+    _removeFromQueue(taskId);
+    db.execute('delete from tasks where id = ?', [taskId]);
+    _tryDeleteTaskTemp(taskId);
+    return true;
+  }
+
   void _pump() {
-    while (_running.isEmpty && _queue.isNotEmpty) {
+    while (_running.length < _maxConcurrent && _queue.isNotEmpty) {
       final taskId = _queue.removeFirst();
       if (_running.contains(taskId)) continue;
       _running.add(taskId);
       unawaited(_run(taskId).whenComplete(() {
+        _stopByTaskId.remove(taskId);
         _running.remove(taskId);
         _pump();
       }));
@@ -408,11 +623,32 @@ class _TaskRunner {
     final target = (row['target'] as String).trim();
     final paramsJson = (row['params_json'] as String);
 
+    final stopCheck = () => stopMode(taskId);
+    final ctx = _TaskCtx(db, taskId, stopCheck);
+
     Map<String, dynamic> params;
     try {
       params = Map<String, dynamic>.from(jsonDecode(paramsJson) as Map);
     } catch (_) {
       params = {'source': source, 'target': target};
+    }
+
+    // If paused/canceled before start, do not run.
+    if (stopMode(taskId) != null) return;
+
+    final canonicalId = _canonicalComicId(source: source, target: target);
+    if (canonicalId.isNotEmpty && _comicExists(canonicalId)) {
+      final now0 = DateTime.now().millisecondsSinceEpoch;
+      db.execute(
+        '''
+        update tasks
+        set status = 'succeeded', message = 'already downloaded', comic_id = ?, updated_at = ?
+        where id = ?
+        ''',
+        [canonicalId, now0, taskId],
+      );
+      _tryDeleteTaskTemp(taskId);
+      return;
     }
 
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -425,20 +661,50 @@ class _TaskRunner {
       [now, taskId],
     );
 
-    final ctx = _TaskCtx(db, taskId);
-
     try {
+      ctx.throwIfStopped();
+
+      final workDir = taskTempDir(taskId)..createSync(recursive: true);
       final downloaded = await _downloadBySource(
         source: source,
         target: target,
         params: params,
         ctx: ctx,
+        workDir: workDir,
       );
 
       final comicId = downloaded.id;
-      final comicDir = Directory(
-        p.join(storage.path, 'comics', _safeId(comicId)),
-      );
+      final comicDir = Directory(p.join(storage.path, 'comics', _safeId(comicId)));
+
+      if (_comicExists(comicId)) {
+        final now1 = DateTime.now().millisecondsSinceEpoch;
+        db.execute(
+          '''
+          update tasks
+          set status = 'succeeded', message = 'already downloaded', comic_id = ?, updated_at = ?
+          where id = ?
+          ''',
+          [comicId, now1, taskId],
+        );
+        _tryDeleteTaskTemp(taskId);
+        return;
+      }
+
+      if (comicDir.existsSync()) {
+        try {
+          comicDir.deleteSync(recursive: true);
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      final committedDir = taskTempDir(taskId);
+      if (committedDir.existsSync()) {
+        committedDir.renameSync(comicDir.path);
+      } else {
+        comicDir.createSync(recursive: true);
+      }
+
       final pagesDir = Directory(p.join(comicDir.path, 'pages'));
       final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
 
@@ -493,6 +759,32 @@ class _TaskRunner {
         [downloaded.id, DateTime.now().millisecondsSinceEpoch, taskId],
       );
     } catch (e, st) {
+      if (e is _TaskStopped) {
+        final now2 = DateTime.now().millisecondsSinceEpoch;
+        if (e.mode == _TaskStopMode.pause) {
+          db.execute(
+            '''
+            update tasks
+            set status = 'paused', message = null, updated_at = ?
+            where id = ?
+            ''',
+            [now2, taskId],
+          );
+          return;
+        }
+        if (e.mode == _TaskStopMode.cancel) {
+          db.execute(
+            '''
+            update tasks
+            set status = 'canceled', message = null, updated_at = ?
+            where id = ?
+            ''',
+            [now2, taskId],
+          );
+          _tryDeleteTaskTemp(taskId);
+          return;
+        }
+      }
       final debug = Platform.environment['PICA_TASK_DEBUG'] == '1';
       final stText = st.toString();
       final trimmedSt =
@@ -550,33 +842,66 @@ class _TaskRunner {
     required String target,
     required Map<String, dynamic> params,
     required _TaskCtx ctx,
+    required Directory workDir,
   }) async {
     return switch (source) {
       'picacg' =>
-        _downloadPicacg(storage, readAuth('picacg'), target, params, ctx),
+        _downloadPicacg(workDir, readAuth('picacg'), target, params, ctx),
       'ehentai' =>
-        _downloadEhentai(storage, readAuth('ehentai'), target, params, ctx),
-      'jm' => _downloadJm(storage, readAuth('jm'), target, params, ctx),
+        _downloadEhentai(workDir, readAuth('ehentai'), target, params, ctx),
+      'jm' => _downloadJm(workDir, readAuth('jm'), target, params, ctx),
       'hitomi' =>
-        _downloadHitomi(storage, readAuth('hitomi'), target, params, ctx),
+        _downloadHitomi(workDir, readAuth('hitomi'), target, params, ctx),
       'htmanga' =>
-        _downloadHtmanga(storage, readAuth('htmanga'), target, params, ctx),
+        _downloadHtmanga(workDir, readAuth('htmanga'), target, params, ctx),
       'nhentai' =>
-        _downloadNhentai(storage, readAuth('nhentai'), target, params, ctx),
+        _downloadNhentai(workDir, readAuth('nhentai'), target, params, ctx),
       _ => throw ArgumentError('unknown source'),
     };
   }
 }
 
-void _recreateDir(Directory dir) {
-  if (dir.existsSync()) {
-    try {
-      dir.deleteSync(recursive: true);
-    } catch (_) {
-      // ignore
-    }
+String _canonicalComicId({required String source, required String target}) {
+  final s = source.trim();
+  final t = target.trim();
+  if (s.isEmpty || t.isEmpty) return '';
+  switch (s) {
+    case 'picacg':
+      return t;
+    case 'jm':
+      final m = RegExp(r'\d+').firstMatch(t);
+      final rawId = (m?.group(0) ?? t).trim();
+      return rawId.isEmpty ? '' : 'jm$rawId';
+    case 'hitomi':
+      final m = RegExp(r'\d+').firstMatch(t);
+      final rawId = (m?.group(0) ?? t).trim();
+      return rawId.isEmpty ? '' : 'hitomi$rawId';
+    case 'htmanga':
+      final m = RegExp(r'\d+').firstMatch(t);
+      final rawId = (m?.group(0) ?? t).trim();
+      return rawId.isEmpty ? '' : 'Ht$rawId';
+    case 'nhentai':
+      final m = RegExp(r'\d+').firstMatch(t);
+      final rawId = (m?.group(0) ?? t).trim();
+      return rawId.isEmpty ? '' : 'nhentai$rawId';
+    case 'ehentai':
+      final i = t.indexOf('/g/');
+      if (i >= 0) {
+        var j = i + 3;
+        var gid = '';
+        while (j < t.length) {
+          final ch = t[j];
+          if (ch == '/') break;
+          gid += ch;
+          j++;
+        }
+        if (gid.trim().isNotEmpty) return gid.trim();
+      }
+      final m = RegExp(r'\d+').firstMatch(t);
+      return (m?.group(0) ?? '').trim();
+    default:
+      return '';
   }
-  dir.createSync(recursive: true);
 }
 
 String _guessExtFromUrl(Uri uri, {String fallback = 'jpg'}) {
@@ -590,8 +915,51 @@ String _guessExtFromUrl(Uri uri, {String fallback = 'jpg'}) {
   return ext;
 }
 
+bool _nonEmptyFileExists(File file) {
+  try {
+    return file.existsSync() && file.lengthSync() > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+bool _pageFileExists(Directory dir, int pageNo) {
+  if (!dir.existsSync()) return false;
+  final prefix = '$pageNo.';
+  try {
+    for (final e in dir.listSync(followLinks: false)) {
+      if (e is! File) continue;
+      final name = p.basename(e.path);
+      if (name.startsWith(prefix)) return true;
+    }
+  } catch (_) {
+    // ignore
+  }
+  return false;
+}
+
+int _countDownloadedProgress(Directory comicDir) {
+  var count = 0;
+  if (_nonEmptyFileExists(File(p.join(comicDir.path, 'cover.jpg')))) {
+    count += 1;
+  }
+  final pagesRoot = Directory(p.join(comicDir.path, 'pages'));
+  if (!pagesRoot.existsSync()) return count;
+  try {
+    for (final e in pagesRoot.listSync(recursive: true, followLinks: false)) {
+      if (e is! File) continue;
+      final name = p.basename(e.path);
+      final base = name.replaceFirst(RegExp(r'\..+$'), '');
+      if (RegExp(r'^\d+$').hasMatch(base)) count += 1;
+    }
+  } catch (_) {
+    // ignore
+  }
+  return count;
+}
+
 Future<_DownloadedComicData> _downloadPicacg(
-  Directory storage,
+  Directory workDir,
   Map<String, dynamic>? auth,
   String target,
   Map<String, dynamic> params,
@@ -825,33 +1193,39 @@ Future<_DownloadedComicData> _downloadPicacg(
     'downloadedChapters': selected,
   };
 
-  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
-  _recreateDir(comicDir);
-  final pagesRoot = Directory(p.join(comicDir.path, 'pages'));
-  pagesRoot.createSync(recursive: true);
+  final comicDir = workDir..createSync(recursive: true);
+  final pagesRoot = Directory(p.join(comicDir.path, 'pages'))
+    ..createSync(recursive: true);
 
   // compute total
   var totalPages = 0;
   final epPages = <int, List<String>>{};
   ctx.setMessage('fetch pages');
   for (final idx in selected) {
+    ctx.throwIfStopped();
     final order = idx + 1;
     final urls = await getPages(order);
     epPages[order] = urls;
     totalPages += urls.length;
   }
   ctx.setTotal(totalPages + (thumbUrl.isNotEmpty ? 1 : 0));
+  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
   if (thumbUrl.isNotEmpty) {
     ctx.setMessage('download cover');
-    await _downloadToFile(
-      Uri.parse(thumbUrl),
-      File(p.join(comicDir.path, 'cover.jpg')),
-      timeout: const Duration(minutes: 2),
-      maxBytes: 20 * 1024 * 1024,
-      retries: _retryPolicy.fileRetries('picacg'),
-    );
-    ctx.advance();
+    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+    if (!_nonEmptyFileExists(coverFile)) {
+      ctx.throwIfStopped();
+      await _downloadToFile(
+        Uri.parse(thumbUrl),
+        coverFile,
+        timeout: const Duration(minutes: 2),
+        maxBytes: 20 * 1024 * 1024,
+        retries: _retryPolicy.fileRetries('picacg'),
+        stopCheck: ctx.stopCheck,
+      );
+      ctx.advance();
+    }
   }
 
   for (final entry in epPages.entries) {
@@ -861,16 +1235,19 @@ Future<_DownloadedComicData> _downloadPicacg(
     epDir.createSync(recursive: true);
     var pageNo = 0;
     for (final u in urls) {
+      ctx.throwIfStopped();
       pageNo++;
       ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
       final uri = Uri.parse(u);
       final ext = _guessExtFromUrl(uri);
+      if (_pageFileExists(epDir, pageNo)) continue;
       await _downloadToFile(
         uri,
         File(p.join(epDir.path, '$pageNo.$ext')),
         timeout: const Duration(minutes: 5),
         maxBytes: 50 * 1024 * 1024,
         retries: _retryPolicy.fileRetries('picacg'),
+        stopCheck: ctx.stopCheck,
       );
       ctx.advance();
     }
@@ -888,7 +1265,7 @@ Future<_DownloadedComicData> _downloadPicacg(
 }
 
 Future<_DownloadedComicData> _downloadEhentai(
-  Directory storage,
+  Directory workDir,
   Map<String, dynamic>? auth,
   String target,
   Map<String, dynamic> params,
@@ -937,6 +1314,7 @@ Future<_DownloadedComicData> _downloadEhentai(
     timeout: const Duration(seconds: 25),
     retries: 2,
     maxBytes: 12 * 1024 * 1024,
+    stopCheck: ctx.stopCheck,
   );
   final doc = html.parse(galleryRes.bodyText());
 
@@ -997,6 +1375,7 @@ Future<_DownloadedComicData> _downloadEhentai(
 
   final readerLinks = <String>[];
   for (var pageno = 0; pageno < totalThumbPages; pageno++) {
+    ctx.throwIfStopped();
     final u = galleryUri.replace(
       queryParameters: {
         ...galleryUri.queryParameters,
@@ -1009,6 +1388,7 @@ Future<_DownloadedComicData> _downloadEhentai(
       timeout: const Duration(seconds: 25),
       retries: 2,
       maxBytes: 12 * 1024 * 1024,
+      stopCheck: ctx.stopCheck,
     );
     final d = html.parse(res.bodyText());
     for (final a in d.querySelectorAll('div#gdt > a')) {
@@ -1024,28 +1404,34 @@ Future<_DownloadedComicData> _downloadEhentai(
   final id = gid;
   final directory = _safeId(id);
 
-  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
-  _recreateDir(comicDir);
-  final pagesDir = Directory(p.join(comicDir.path, 'pages'));
-  pagesDir.createSync(recursive: true);
+  final comicDir = workDir..createSync(recursive: true);
+  final pagesDir = Directory(p.join(comicDir.path, 'pages'))
+    ..createSync(recursive: true);
 
   ctx.setTotal((coverPath.isEmpty ? 0 : 1) + readerLinks.length);
+  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
   if (coverPath.isNotEmpty) {
     ctx.setMessage('download cover');
-    await _downloadToFile(
-      Uri.parse(coverPath),
-      File(p.join(comicDir.path, 'cover.jpg')),
-      headers: headersBase,
-      timeout: const Duration(minutes: 2),
-      maxBytes: 20 * 1024 * 1024,
-      retries: _retryPolicy.fileRetries('ehentai'),
-    );
-    ctx.advance();
+    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+    if (!_nonEmptyFileExists(coverFile)) {
+      ctx.throwIfStopped();
+      await _downloadToFile(
+        Uri.parse(coverPath),
+        coverFile,
+        headers: headersBase,
+        timeout: const Duration(minutes: 2),
+        maxBytes: 20 * 1024 * 1024,
+        retries: _retryPolicy.fileRetries('ehentai'),
+        stopCheck: ctx.stopCheck,
+      );
+      ctx.advance();
+    }
   }
 
   var idx = 0;
   for (final link in readerLinks) {
+    ctx.throwIfStopped();
     idx++;
     ctx.setMessage('fetch page $idx/${readerLinks.length}');
     final pageRes = await _httpGetBytesWithRetry(
@@ -1057,6 +1443,7 @@ Future<_DownloadedComicData> _downloadEhentai(
       timeout: const Duration(seconds: 25),
       retries: 2,
       maxBytes: 8 * 1024 * 1024,
+      stopCheck: ctx.stopCheck,
     );
     final pageDoc = html.parse(pageRes.bodyText());
     var imgUrl =
@@ -1072,6 +1459,7 @@ Future<_DownloadedComicData> _downloadEhentai(
     ctx.setMessage('download page $idx/${readerLinks.length}');
     final uri = Uri.parse(imgUrl);
     final ext = _guessExtFromUrl(uri, fallback: 'jpg');
+    if (_pageFileExists(pagesDir, idx)) continue;
     await _downloadToFile(
       uri,
       File(p.join(pagesDir.path, '$idx.$ext')),
@@ -1082,6 +1470,7 @@ Future<_DownloadedComicData> _downloadEhentai(
       timeout: const Duration(minutes: 5),
       maxBytes: 80 * 1024 * 1024,
       retries: _retryPolicy.fileRetries('ehentai'),
+      stopCheck: ctx.stopCheck,
     );
     ctx.advance();
   }
@@ -1122,7 +1511,7 @@ Future<_DownloadedComicData> _downloadEhentai(
 }
 
 Future<_DownloadedComicData> _downloadJm(
-  Directory storage,
+  Directory workDir,
   Map<String, dynamic>? auth,
   String target,
   Map<String, dynamic> params,
@@ -1397,24 +1786,28 @@ Future<_DownloadedComicData> _downloadJm(
     'downloadedChapters': selected,
   };
 
-  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
-  _recreateDir(comicDir);
-  final pagesRoot = Directory(p.join(comicDir.path, 'pages'));
-  pagesRoot.createSync(recursive: true);
+  final comicDir = workDir..createSync(recursive: true);
+  final pagesRoot = Directory(p.join(comicDir.path, 'pages'))
+    ..createSync(recursive: true);
 
   // cover
   final coverUrl = '$imgBaseUrl/media/albums/${rawId}_3x4.jpg';
   ctx.setMessage('download cover');
   ctx.setTotal(1);
-  await _downloadToFile(
-    Uri.parse(coverUrl),
-    File(p.join(comicDir.path, 'cover.jpg')),
-    headers: {'user-agent': ua, 'referer': 'https://localhost/'},
-    timeout: const Duration(minutes: 2),
-    maxBytes: 20 * 1024 * 1024,
-    retries: _retryPolicy.fileRetries('jm'),
-  );
-  ctx.advance();
+  final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+  if (!_nonEmptyFileExists(coverFile)) {
+    ctx.throwIfStopped();
+    await _downloadToFile(
+      Uri.parse(coverUrl),
+      coverFile,
+      headers: {'user-agent': ua, 'referer': 'https://localhost/'},
+      timeout: const Duration(minutes: 2),
+      maxBytes: 20 * 1024 * 1024,
+      retries: _retryPolicy.fileRetries('jm'),
+      stopCheck: ctx.stopCheck,
+    );
+    ctx.advance();
+  }
 
   // pages
   final selectedKeys = series.keys.toList()..sort();
@@ -1430,6 +1823,7 @@ Future<_DownloadedComicData> _downloadJm(
   final chapterImages = <int, List<String>>{};
   var totalPages = 0;
   for (final e in chaptersToDownload.entries) {
+    ctx.throwIfStopped();
     final chapterId = e.value;
     final data = await jmGet('/chapter?&id=$chapterId');
     final images = <String>[];
@@ -1445,6 +1839,7 @@ Future<_DownloadedComicData> _downloadJm(
     totalPages += images.length;
   }
   ctx.setTotal(1 + totalPages);
+  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
   for (final entry in chapterImages.entries) {
     final epNo = entry.key;
@@ -1455,6 +1850,7 @@ Future<_DownloadedComicData> _downloadJm(
 
     var pageNo = 0;
     for (final u in urls) {
+      ctx.throwIfStopped();
       pageNo++;
       ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
       final uri = Uri.parse(u);
@@ -1464,6 +1860,8 @@ Future<_DownloadedComicData> _downloadJm(
           ? imageName.substring(0, imageName.lastIndexOf('.'))
           : imageName;
       final ext = _guessExtFromUrl(uri);
+
+      if (_pageFileExists(epDir, pageNo)) continue;
 
       final bytesRes = await _httpGetBytesWithRetry(
         uri,
@@ -1480,6 +1878,7 @@ Future<_DownloadedComicData> _downloadJm(
         timeout: const Duration(minutes: 2),
         retries: 2,
         maxBytes: 80 * 1024 * 1024,
+        stopCheck: ctx.stopCheck,
       );
 
       Uint8List outBytes = bytesRes.body;
@@ -1512,6 +1911,7 @@ Future<_DownloadedComicData> _downloadJm(
 
       final outPath = p.join(epDir.path, '$pageNo.$outExt');
       final outFile = File(outPath);
+      if (_pageFileExists(epDir, pageNo)) continue;
       if (outFile.existsSync()) outFile.deleteSync();
       outFile.createSync(recursive: true);
       outFile.writeAsBytesSync(outBytes);
@@ -1531,7 +1931,7 @@ Future<_DownloadedComicData> _downloadJm(
 }
 
 Future<_DownloadedComicData> _downloadHitomi(
-  Directory storage,
+  Directory workDir,
   Map<String, dynamic>? auth,
   String target,
   Map<String, dynamic> params,
@@ -1562,6 +1962,7 @@ Future<_DownloadedComicData> _downloadHitomi(
       timeout: const Duration(seconds: 20),
       retries: 2,
       maxBytes: 12 * 1024 * 1024,
+      stopCheck: ctx.stopCheck,
     );
   }
 
@@ -1717,33 +2118,41 @@ Future<_DownloadedComicData> _downloadHitomi(
     return urlFromUrl(u, 'w');
   }
 
-  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
-  _recreateDir(comicDir);
-  final pagesDir = Directory(p.join(comicDir.path, 'pages'));
-  pagesDir.createSync(recursive: true);
+  final comicDir = workDir..createSync(recursive: true);
+  final pagesDir = Directory(p.join(comicDir.path, 'pages'))
+    ..createSync(recursive: true);
 
   final total = (cover.isEmpty ? 0 : 1) + files.length;
   ctx.setTotal(total);
+  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
   if (cover.isNotEmpty) {
     ctx.setMessage('download cover');
-    await _downloadToFile(
-      Uri.parse(cover),
-      File(p.join(comicDir.path, 'cover.jpg')),
-      headers: headers,
-      timeout: const Duration(minutes: 2),
-      maxBytes: 20 * 1024 * 1024,
-      retries: _retryPolicy.fileRetries('hitomi'),
-    );
-    ctx.advance();
+    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+    if (!_nonEmptyFileExists(coverFile)) {
+      ctx.throwIfStopped();
+      await _downloadToFile(
+        Uri.parse(cover),
+        coverFile,
+        headers: headers,
+        timeout: const Duration(minutes: 2),
+        maxBytes: 20 * 1024 * 1024,
+        retries: _retryPolicy.fileRetries('hitomi'),
+        stopCheck: ctx.stopCheck,
+      );
+      ctx.advance();
+    }
   }
 
+  ctx.throwIfStopped();
   await ensureGg();
 
   var idx = 0;
   for (final f in files) {
+    ctx.throwIfStopped();
     idx++;
     ctx.setMessage('download pages ($idx/${files.length})');
+    if (_pageFileExists(pagesDir, idx)) continue;
     final uriWebp = Uri.parse(urlFromHash(f, 'webp', null));
     String ext = 'webp';
     try {
@@ -1754,8 +2163,10 @@ Future<_DownloadedComicData> _downloadHitomi(
         timeout: const Duration(minutes: 5),
         maxBytes: 50 * 1024 * 1024,
         retries: _retryPolicy.fileRetries('hitomi'),
+        stopCheck: ctx.stopCheck,
       );
     } catch (_) {
+      ctx.throwIfStopped();
       final name = (f['name'] ?? '').toString();
       ext = name.contains('.') ? name.split('.').last : 'jpg';
       final uri2 = Uri.parse(urlFromHash(f, null, null));
@@ -1766,6 +2177,7 @@ Future<_DownloadedComicData> _downloadHitomi(
         timeout: const Duration(minutes: 5),
         maxBytes: 50 * 1024 * 1024,
         retries: _retryPolicy.fileRetries('hitomi'),
+        stopCheck: ctx.stopCheck,
       );
     }
     ctx.advance();
@@ -1800,7 +2212,7 @@ Future<_DownloadedComicData> _downloadHitomi(
 }
 
 Future<_DownloadedComicData> _downloadHtmanga(
-  Directory storage,
+  Directory workDir,
   Map<String, dynamic>? auth,
   String target,
   Map<String, dynamic> params,
@@ -1894,6 +2306,7 @@ Future<_DownloadedComicData> _downloadHtmanga(
     timeout: const Duration(seconds: 20),
     retries: 2,
     maxBytes: 20 * 1024 * 1024,
+    stopCheck: ctx.stopCheck,
   );
   final matches =
       RegExp(r'(?<=//)[\w./\[\]()-]+').allMatches(galleryRes.bodyText());
@@ -1908,31 +2321,38 @@ Future<_DownloadedComicData> _downloadHtmanga(
     imageUrls.add('https://$cleaned');
   }
 
-  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
-  _recreateDir(comicDir);
-  final pagesDir = Directory(p.join(comicDir.path, 'pages'));
-  pagesDir.createSync(recursive: true);
+  final comicDir = workDir..createSync(recursive: true);
+  final pagesDir = Directory(p.join(comicDir.path, 'pages'))
+    ..createSync(recursive: true);
 
   final total = (coverUrl.isEmpty ? 0 : 1) + imageUrls.length;
   ctx.setTotal(total);
+  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
   if (coverUrl.isNotEmpty) {
     ctx.setMessage('download cover');
-    await _downloadToFile(
-      Uri.parse(coverUrl),
-      File(p.join(comicDir.path, 'cover.jpg')),
-      headers: headers,
-      timeout: const Duration(minutes: 2),
-      maxBytes: 20 * 1024 * 1024,
-      retries: _retryPolicy.fileRetries('htmanga'),
-    );
-    ctx.advance();
+    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+    if (!_nonEmptyFileExists(coverFile)) {
+      ctx.throwIfStopped();
+      await _downloadToFile(
+        Uri.parse(coverUrl),
+        coverFile,
+        headers: headers,
+        timeout: const Duration(minutes: 2),
+        maxBytes: 20 * 1024 * 1024,
+        retries: _retryPolicy.fileRetries('htmanga'),
+        stopCheck: ctx.stopCheck,
+      );
+      ctx.advance();
+    }
   }
 
   var idx = 0;
   for (final u in imageUrls) {
+    ctx.throwIfStopped();
     idx++;
     ctx.setMessage('download pages ($idx/${imageUrls.length})');
+    if (_pageFileExists(pagesDir, idx)) continue;
     final uri = Uri.parse(u);
     final ext = _guessExtFromUrl(uri);
     final outPath = p.join(pagesDir.path, '$idx.$ext');
@@ -1943,6 +2363,7 @@ Future<_DownloadedComicData> _downloadHtmanga(
       timeout: const Duration(minutes: 5),
       maxBytes: 50 * 1024 * 1024,
       retries: _retryPolicy.fileRetries('htmanga'),
+      stopCheck: ctx.stopCheck,
     );
     ctx.advance();
   }
@@ -1977,7 +2398,7 @@ Future<_DownloadedComicData> _downloadHtmanga(
 }
 
 Future<_DownloadedComicData> _downloadNhentai(
-  Directory storage,
+  Directory workDir,
   Map<String, dynamic>? auth,
   String target,
   Map<String, dynamic> params,
@@ -2007,12 +2428,14 @@ Future<_DownloadedComicData> _downloadNhentai(
   };
 
   ctx.setMessage('fetch comic info');
+  ctx.throwIfStopped();
   final apiRes = await _httpGetBytesWithRetry(
     Uri.parse('$baseUrl/api/gallery/$rawId'),
     headers: headers,
     timeout: const Duration(seconds: 20),
     retries: 2,
     maxBytes: 3 * 1024 * 1024,
+    stopCheck: ctx.stopCheck,
   );
 
   final decoded = jsonDecode(apiRes.bodyText());
@@ -2075,31 +2498,38 @@ Future<_DownloadedComicData> _downloadNhentai(
     imageUrls.add('https://i.nhentai.net/galleries/$mediaId/$n.$extension');
   }
 
-  final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
-  _recreateDir(comicDir);
-  final pagesDir = Directory(p.join(comicDir.path, 'pages'));
-  pagesDir.createSync(recursive: true);
+  final comicDir = workDir..createSync(recursive: true);
+  final pagesDir = Directory(p.join(comicDir.path, 'pages'))
+    ..createSync(recursive: true);
 
   final total = (cover.isEmpty ? 0 : 1) + imageUrls.length;
   ctx.setTotal(total);
+  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
   if (cover.isNotEmpty) {
     ctx.setMessage('download cover');
-    await _downloadToFile(
-      Uri.parse(cover),
-      File(p.join(comicDir.path, 'cover.jpg')),
-      headers: headers,
-      timeout: const Duration(minutes: 2),
-      maxBytes: 20 * 1024 * 1024,
-      retries: _retryPolicy.fileRetries('nhentai'),
-    );
-    ctx.advance();
+    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+    if (!_nonEmptyFileExists(coverFile)) {
+      ctx.throwIfStopped();
+      await _downloadToFile(
+        Uri.parse(cover),
+        coverFile,
+        headers: headers,
+        timeout: const Duration(minutes: 2),
+        maxBytes: 20 * 1024 * 1024,
+        retries: _retryPolicy.fileRetries('nhentai'),
+        stopCheck: ctx.stopCheck,
+      );
+      ctx.advance();
+    }
   }
 
   var idx = 0;
   for (final u in imageUrls) {
+    ctx.throwIfStopped();
     idx++;
     ctx.setMessage('download pages ($idx/${imageUrls.length})');
+    if (_pageFileExists(pagesDir, idx)) continue;
     final uri = Uri.parse(u);
     final ext = _guessExtFromUrl(uri);
     await _downloadToFile(
@@ -2109,6 +2539,7 @@ Future<_DownloadedComicData> _downloadNhentai(
       timeout: const Duration(minutes: 5),
       maxBytes: 50 * 1024 * 1024,
       retries: _retryPolicy.fileRetries('nhentai'),
+      stopCheck: ctx.stopCheck,
     );
     ctx.advance();
   }
@@ -2156,6 +2587,7 @@ Handler buildHandler({
 
   final taskRunner = _TaskRunner(db: db, storage: storage);
   taskRunner.markStaleRunningTasksFailed();
+  taskRunner.enqueueQueuedFromDb();
 
   final extracting = <String, Future<void>>{};
 
@@ -2731,8 +3163,74 @@ Handler buildHandler({
       json['eps'] = eps;
     }
 
-    final taskId = taskRunner.createDownloadTask(json);
-    return _json(200, {'ok': true, 'taskId': taskId});
+    try {
+      final taskId = taskRunner.createDownloadTask(json);
+      return _json(200, {'ok': true, 'taskId': taskId});
+    } catch (e) {
+      final canonicalId = _canonicalComicId(source: source, target: target);
+      final msg = e.toString();
+      if (msg.contains('already downloaded')) {
+        return _json(409, {
+          'ok': false,
+          'error': 'already downloaded',
+          'comicId': canonicalId,
+        });
+      }
+      if (msg.contains('task already exists')) {
+        return _json(409, {
+          'ok': false,
+          'error': 'task already exists',
+        });
+      }
+      return _json(500, {'ok': false, 'error': 'create task failed: $e'});
+    }
+  });
+
+  api.get('/v1/tasks/config', (Request req) {
+    return _json(200, {
+      'ok': true,
+      'maxConcurrent': taskRunner.maxConcurrent,
+    });
+  });
+
+  api.put('/v1/tasks/config', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+    final raw = json['maxConcurrent'];
+    final v = int.tryParse((raw ?? '').toString());
+    if (v == null) {
+      return _json(400, {'ok': false, 'error': 'missing maxConcurrent'});
+    }
+    taskRunner.setMaxConcurrent(v);
+    return _json(200, {'ok': true, 'maxConcurrent': taskRunner.maxConcurrent});
+  });
+
+  api.post('/v1/tasks/<id>/pause', (Request req, String id) {
+    taskRunner.pauseTask(id);
+    return _json(200, {'ok': true});
+  });
+
+  api.post('/v1/tasks/<id>/resume', (Request req, String id) {
+    taskRunner.resumeTask(id);
+    return _json(200, {'ok': true});
+  });
+
+  api.post('/v1/tasks/<id>/cancel', (Request req, String id) {
+    taskRunner.cancelTask(id);
+    return _json(200, {'ok': true});
+  });
+
+  api.post('/v1/tasks/<id>/retry', (Request req, String id) {
+    taskRunner.retryTask(id);
+    return _json(200, {'ok': true});
+  });
+
+  api.delete('/v1/tasks/<id>', (Request req, String id) {
+    final ok = taskRunner.deleteTask(id);
+    if (!ok) {
+      return _json(409, {'ok': false, 'error': 'task is running'});
+    }
+    return _json(200, {'ok': true});
   });
 
   api.get('/v1/tasks', (Request req) {

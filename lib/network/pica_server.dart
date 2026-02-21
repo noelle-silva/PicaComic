@@ -11,6 +11,7 @@ import 'package:pica_comic/network/app_dio.dart';
 import 'package:pica_comic/network/download.dart';
 import 'package:pica_comic/network/download_model.dart';
 import 'package:pica_comic/tools/io_tools.dart';
+import 'package:pica_comic/tools/translations.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 
 class PicaServer {
@@ -172,15 +173,120 @@ class PicaServer {
       'target': target,
       if (eps != null) 'eps': eps,
     };
-    final res = await dio.post('/api/v1/tasks/download', data: payload);
+    final res = await dio.post(
+      '/api/v1/tasks/download',
+      data: payload,
+      options: Options(validateStatus: (_) => true),
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      final err = (data['error'] ?? 'request failed').toString();
+      if (err == 'already downloaded') {
+        throw Exception("已经下载".tl);
+      }
+      if (err == 'task already exists') {
+        throw Exception("任务已存在".tl);
+      }
+      throw Exception(err);
+    }
+    final taskId = (data['taskId'] ?? '').toString();
+    if (taskId.isEmpty) throw Exception('missing taskId');
+    return taskId;
+  }
+
+  Future<int> getMaxConcurrent() async {
+    final dio = _dio();
+    final res = await dio.get(
+      '/api/v1/tasks/config',
+      options: Options(validateStatus: (_) => true),
+    );
     final data = res.data;
     if (data is! Map) throw Exception('invalid response');
     if (data['ok'] != true) {
       throw Exception((data['error'] ?? 'request failed').toString());
     }
-    final taskId = (data['taskId'] ?? '').toString();
-    if (taskId.isEmpty) throw Exception('missing taskId');
-    return taskId;
+    return int.tryParse((data['maxConcurrent'] ?? '1').toString()) ?? 1;
+  }
+
+  Future<int> setMaxConcurrent(int value) async {
+    final dio = _dio();
+    final res = await dio.put(
+      '/api/v1/tasks/config',
+      data: {'maxConcurrent': value},
+      options: Options(validateStatus: (_) => true),
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      throw Exception((data['error'] ?? 'request failed').toString());
+    }
+    return int.tryParse((data['maxConcurrent'] ?? '').toString()) ?? value;
+  }
+
+  Future<void> pauseTask(String id) async {
+    final dio = _dio();
+    final res = await dio.post(
+      '/api/v1/tasks/${Uri.encodeComponent(id)}/pause',
+      options: Options(validateStatus: (_) => true),
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      throw Exception((data['error'] ?? 'request failed').toString());
+    }
+  }
+
+  Future<void> resumeTask(String id) async {
+    final dio = _dio();
+    final res = await dio.post(
+      '/api/v1/tasks/${Uri.encodeComponent(id)}/resume',
+      options: Options(validateStatus: (_) => true),
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      throw Exception((data['error'] ?? 'request failed').toString());
+    }
+  }
+
+  Future<void> cancelTask(String id) async {
+    final dio = _dio();
+    final res = await dio.post(
+      '/api/v1/tasks/${Uri.encodeComponent(id)}/cancel',
+      options: Options(validateStatus: (_) => true),
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      throw Exception((data['error'] ?? 'request failed').toString());
+    }
+  }
+
+  Future<void> retryTask(String id) async {
+    final dio = _dio();
+    final res = await dio.post(
+      '/api/v1/tasks/${Uri.encodeComponent(id)}/retry',
+      options: Options(validateStatus: (_) => true),
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      throw Exception((data['error'] ?? 'request failed').toString());
+    }
+  }
+
+  Future<void> deleteTask(String id) async {
+    final dio = _dio();
+    final res = await dio.delete(
+      '/api/v1/tasks/${Uri.encodeComponent(id)}',
+      options: Options(validateStatus: (_) => true),
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      throw Exception((data['error'] ?? 'request failed').toString());
+    }
   }
 
   Future<List<ServerTask>> listTasks({int limit = 50}) async {
