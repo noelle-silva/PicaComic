@@ -42,12 +42,48 @@ Future<void> main(List<String> args) async {
     'nhentai': intOr(envOrDotNullable('PICA_FILE_RETRIES_NHENTAI'), 3),
   };
 
+  final fileConcurrentDefault =
+      intOr(envOrDotNullable('PICA_FILE_CONCURRENT_DEFAULT'), 6, min: 1, max: 16);
+  final fileConcurrentBySource = <String, int>{};
+  final picacgConcurrent = envOrDotNullable('PICA_FILE_CONCURRENT_PICACG');
+  if (picacgConcurrent != null) {
+    fileConcurrentBySource['picacg'] =
+        intOr(picacgConcurrent, fileConcurrentDefault, min: 1, max: 16);
+  }
+  final ehentaiConcurrent = envOrDotNullable('PICA_FILE_CONCURRENT_EHENTAI');
+  if (ehentaiConcurrent != null) {
+    fileConcurrentBySource['ehentai'] =
+        intOr(ehentaiConcurrent, fileConcurrentDefault, min: 1, max: 16);
+  }
+  final jmConcurrent = envOrDotNullable('PICA_FILE_CONCURRENT_JM');
+  if (jmConcurrent != null) {
+    fileConcurrentBySource['jm'] =
+        intOr(jmConcurrent, fileConcurrentDefault, min: 1, max: 16);
+  }
+  final hitomiConcurrent = envOrDotNullable('PICA_FILE_CONCURRENT_HITOMI');
+  if (hitomiConcurrent != null) {
+    fileConcurrentBySource['hitomi'] =
+        intOr(hitomiConcurrent, fileConcurrentDefault, min: 1, max: 16);
+  }
+  final htmangaConcurrent = envOrDotNullable('PICA_FILE_CONCURRENT_HTMANGA');
+  if (htmangaConcurrent != null) {
+    fileConcurrentBySource['htmanga'] =
+        intOr(htmangaConcurrent, fileConcurrentDefault, min: 1, max: 16);
+  }
+  final nhentaiConcurrent = envOrDotNullable('PICA_FILE_CONCURRENT_NHENTAI');
+  if (nhentaiConcurrent != null) {
+    fileConcurrentBySource['nhentai'] =
+        intOr(nhentaiConcurrent, fileConcurrentDefault, min: 1, max: 16);
+  }
+
   final handler = buildHandler(
     storageDir: storage,
     apiKey: apiKey,
     enableUserdata: enableUserdata,
     fileRetriesDefault: fileRetriesDefault,
     fileRetriesBySource: fileRetriesBySource,
+    fileConcurrentDefault: fileConcurrentDefault,
+    fileConcurrentBySource: fileConcurrentBySource,
   );
 
   final server = await shelf_io.serve(handler, bind, port);

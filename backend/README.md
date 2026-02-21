@@ -26,6 +26,13 @@ dart run bin/server.dart
 - `PICA_FILE_RETRIES_HITOMI`：可选；默认 `2`
 - `PICA_FILE_RETRIES_HTMANGA`：可选；默认 `2`
 - `PICA_FILE_RETRIES_NHENTAI`：可选；默认 `3`
+- `PICA_FILE_CONCURRENT_DEFAULT`：可选；单任务内文件下载并行数（1-16），默认 `6`
+- `PICA_FILE_CONCURRENT_PICACG`：可选；覆盖 `picacg` 的并行数
+- `PICA_FILE_CONCURRENT_EHENTAI`：可选；覆盖 `ehentai` 的并行数
+- `PICA_FILE_CONCURRENT_JM`：可选；覆盖 `jm` 的并行数
+- `PICA_FILE_CONCURRENT_HITOMI`：可选；覆盖 `hitomi` 的并行数
+- `PICA_FILE_CONCURRENT_HTMANGA`：可选；覆盖 `htmanga` 的并行数
+- `PICA_FILE_CONCURRENT_NHENTAI`：可选；覆盖 `nhentai` 的并行数
 
 ## .env（推荐）
 
@@ -45,6 +52,8 @@ dart run bin/server.dart
   - `eps`：可选；章节序号数组（从 0 开始，适用于 `picacg/jm`）
 - `GET /api/v1/tasks?limit=50`：列出任务
 - `GET /api/v1/tasks/{id}`：查询任务状态/进度
+- `GET /api/v1/tasks/config`：查询任务并发配置（`maxConcurrent` / `fileConcurrent`）
+- `PUT /api/v1/tasks/config`：更新任务并发配置（JSON，可单独更新任一字段）
 - `POST /api/v1/userdata`：可选；需要 `PICA_ENABLE_USERDATA=1`；multipart，字段 `file`（`.picadata`）
 - `GET /api/v1/userdata`：可选；需要 `PICA_ENABLE_USERDATA=1`
 - `POST /api/v1/comics/fetch`：服务端拉取 zip 并入库（JSON）

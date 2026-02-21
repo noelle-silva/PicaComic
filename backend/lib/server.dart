@@ -54,6 +54,22 @@ class _RetryPolicy {
   }
 }
 
+class _ConcurrencyPolicy {
+  final int fileConcurrentDefault;
+  final Map<String, int> fileConcurrentBySource;
+
+  const _ConcurrencyPolicy({
+    required this.fileConcurrentDefault,
+    required this.fileConcurrentBySource,
+  });
+
+  int fileConcurrent(String source) {
+    final v = fileConcurrentBySource[source];
+    if (v != null) return v.clamp(1, 16);
+    return fileConcurrentDefault.clamp(1, 16);
+  }
+}
+
 _RetryPolicy _retryPolicy = const _RetryPolicy(
   fileRetriesDefault: 2,
   fileRetriesBySource: {
@@ -66,6 +82,96 @@ _RetryPolicy _retryPolicy = const _RetryPolicy(
   },
 );
 
+_ConcurrencyPolicy _concurrencyPolicy = const _ConcurrencyPolicy(
+  fileConcurrentDefault: 6,
+  fileConcurrentBySource: {},
+);
+
+class _TrackedFuture {
+  bool done = false;
+  late final Future<void> future;
+
+  _TrackedFuture(Future<void> f) {
+    future = f.whenComplete(() => done = true);
+  }
+}
+
+Future<void> _forEachConcurrent<T>(
+  Iterable<T> items,
+  int concurrency,
+  Future<void> Function(T item) fn, {
+  _StopCheck? stopCheck,
+  void Function()? onError,
+}) async {
+  final c = concurrency.clamp(1, 16);
+  final it = items.iterator;
+  final inFlight = <_TrackedFuture>[];
+
+  Object? firstErr;
+  StackTrace? firstSt;
+
+  void startOne() {
+    if (firstErr != null) return;
+    final stop = stopCheck?.call();
+    if (stop != null) throw _TaskStopped(stop);
+    if (!it.moveNext()) return;
+    final item = it.current;
+    final tracked = _TrackedFuture(
+      () async {
+        final stop2 = stopCheck?.call();
+        if (stop2 != null) throw _TaskStopped(stop2);
+        await fn(item);
+      }(),
+    );
+    inFlight.add(tracked);
+  }
+
+  Future<void> waitOne() async {
+    if (inFlight.isEmpty) return;
+    try {
+      await Future.any(inFlight.map((e) => e.future));
+    } catch (e, st) {
+      firstErr ??= e;
+      firstSt ??= st;
+      onError?.call();
+    } finally {
+      inFlight.removeWhere((e) => e.done);
+    }
+  }
+
+  try {
+    for (var i = 0; i < c; i++) {
+      startOne();
+    }
+
+    while (inFlight.isNotEmpty) {
+      await waitOne();
+      while (firstErr == null && inFlight.length < c) {
+        final before = inFlight.length;
+        startOne();
+        if (inFlight.length == before) break;
+      }
+    }
+  } catch (e, st) {
+    firstErr ??= e;
+    firstSt ??= st;
+    onError?.call();
+  } finally {
+    // Avoid unhandled future errors.
+    if (inFlight.isNotEmpty) {
+      try {
+        await Future.wait(inFlight.map((e) => e.future), eagerError: false);
+      } catch (_) {
+        // ignore
+      }
+    }
+  }
+
+  if (firstErr != null) {
+    Error.throwWithStackTrace(firstErr!, firstSt ?? StackTrace.current);
+  }
+}
+
 Future<void> _downloadToFile(
   Uri uri,
   File outFile, {
@@ -74,6 +180,7 @@ Future<void> _downloadToFile(
   int? maxBytes,
   int retries = 0,
   _StopCheck? stopCheck,
+  HttpClient? client,
 }) async {
   if (uri.scheme != 'http' && uri.scheme != 'https') {
     throw ArgumentError('unsupported scheme');
@@ -97,9 +204,10 @@ Future<void> _downloadToFile(
       }
     }
 
-    final client = HttpClient()..connectionTimeout = timeout;
+    final ownedClient = client == null;
+    final http = client ?? (HttpClient()..connectionTimeout = timeout);
     try {
-      final req = await client.getUrl(uri).timeout(timeout);
+      final req = await http.getUrl(uri).timeout(timeout);
       req.followRedirects = true;
       req.maxRedirects = 5;
       headers?.forEach((k, v) {
@@ -159,7 +267,9 @@ Future<void> _downloadToFile(
       if (e is StateError) rethrow;
       await Future.delayed(Duration(milliseconds: 400 * (1 << attempt)));
     } finally {
-      client.close(force: true);
+      if (ownedClient) {
+        http.close(force: true);
+      }
     }
   }
   throw lastErr ?? Exception('download failed');
@@ -233,16 +343,18 @@ Future<_HttpRes> _httpGetBytes(
   Duration timeout = const Duration(seconds: 20),
   int? maxBytes,
   _StopCheck? stopCheck,
+  HttpClient? client,
 }) async {
   if (uri.scheme != 'http' && uri.scheme != 'https') {
     throw ArgumentError('unsupported scheme');
   }
-  final client = HttpClient()..connectionTimeout = timeout;
+  final ownedClient = client == null;
+  final http = client ?? (HttpClient()..connectionTimeout = timeout);
   try {
     final stop = stopCheck?.call();
     if (stop != null) throw _TaskStopped(stop);
 
-    final req = await client.getUrl(uri).timeout(timeout);
+    final req = await http.getUrl(uri).timeout(timeout);
     req.followRedirects = true;
     req.maxRedirects = 5;
     headers?.forEach((k, v) {
@@ -276,7 +388,9 @@ Future<_HttpRes> _httpGetBytes(
       contentType: contentType,
     );
   } finally {
-    client.close(force: true);
+    if (ownedClient) {
+      http.close(force: true);
+    }
   }
 }
 
@@ -287,6 +401,7 @@ Future<_HttpRes> _httpGetBytesWithRetry(
   int retries = 3,
   int? maxBytes,
   _StopCheck? stopCheck,
+  HttpClient? client,
 }) async {
   Object? lastErr;
   for (var i = 0; i <= retries; i++) {
@@ -300,6 +415,7 @@ Future<_HttpRes> _httpGetBytesWithRetry(
         timeout: timeout,
         maxBytes: maxBytes,
         stopCheck: stopCheck,
+        client: client,
       );
       if (res.statusCode >= 200 && res.statusCode < 300) {
         return res;
@@ -1027,6 +1143,8 @@ Future<_DownloadedComicData> _downloadPicacg(
     };
   }
 
+  final httpClient = HttpClient();
+  try {
   Future<Map<String, dynamic>> getJson(String pathWithQuery) async {
     final uri = Uri.parse('$apiUrl/$pathWithQuery');
     Object? lastErr;
@@ -1037,6 +1155,7 @@ Future<_DownloadedComicData> _downloadPicacg(
           headers: headersFor('GET', pathWithQuery),
           timeout: const Duration(seconds: 20),
           maxBytes: 10 * 1024 * 1024,
+          client: httpClient,
         );
         final body = res.bodyText();
         Object? decoded;
@@ -1237,20 +1356,25 @@ Future<_DownloadedComicData> _downloadPicacg(
   ctx.setTotal(totalPages + (thumbUrl.isNotEmpty ? 1 : 0));
   ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
+  final fileConcurrent = _concurrencyPolicy.fileConcurrent('picacg');
+  final jobs = <Future<void> Function()>[];
+
   if (thumbUrl.isNotEmpty) {
-    ctx.setMessage('download cover');
     final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
     if (!_nonEmptyFileExists(coverFile)) {
-      ctx.throwIfStopped();
-      await _downloadToFile(
-        Uri.parse(thumbUrl),
-        coverFile,
-        timeout: const Duration(minutes: 2),
-        maxBytes: 20 * 1024 * 1024,
-        retries: _retryPolicy.fileRetries('picacg'),
-        stopCheck: ctx.stopCheck,
-      );
-      ctx.advance();
+      jobs.add(() async {
+        ctx.setMessage('download cover');
+        await _downloadToFile(
+          Uri.parse(thumbUrl),
+          coverFile,
+          timeout: const Duration(minutes: 2),
+          maxBytes: 20 * 1024 * 1024,
+          retries: _retryPolicy.fileRetries('picacg'),
+          stopCheck: ctx.stopCheck,
+          client: httpClient,
+        );
+        ctx.advance();
+      });
     }
   }
 
@@ -1259,25 +1383,42 @@ Future<_DownloadedComicData> _downloadPicacg(
     final urls = entry.value;
     final epDir = Directory(p.join(pagesRoot.path, epNo.toString()));
     epDir.createSync(recursive: true);
-    var pageNo = 0;
-    for (final u in urls) {
-      ctx.throwIfStopped();
-      pageNo++;
-      ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
-      final uri = Uri.parse(u);
-      final ext = _guessExtFromUrl(uri);
+    for (var i = 0; i < urls.length; i++) {
+      final pageNo = i + 1;
       if (_pageFileExists(epDir, pageNo)) continue;
-      await _downloadToFile(
-        uri,
-        File(p.join(epDir.path, '$pageNo.$ext')),
-        timeout: const Duration(minutes: 5),
-        maxBytes: 50 * 1024 * 1024,
-        retries: _retryPolicy.fileRetries('picacg'),
-        stopCheck: ctx.stopCheck,
-      );
-      ctx.advance();
+      final u = urls[i];
+      jobs.add(() async {
+        ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
+        final uri = Uri.parse(u);
+        final ext = _guessExtFromUrl(uri);
+        await _downloadToFile(
+          uri,
+          File(p.join(epDir.path, '$pageNo.$ext')),
+          timeout: const Duration(minutes: 5),
+          maxBytes: 50 * 1024 * 1024,
+          retries: _retryPolicy.fileRetries('picacg'),
+          stopCheck: ctx.stopCheck,
+          client: httpClient,
+        );
+        ctx.advance();
+      });
     }
   }
+
+  var closed = false;
+  void abort() {
+    if (closed) return;
+    closed = true;
+    httpClient.close(force: true);
+  }
+
+  await _forEachConcurrent(
+    jobs,
+    fileConcurrent,
+    (job) => job(),
+    stopCheck: ctx.stopCheck,
+    onError: abort,
+  );
 
   return _DownloadedComicData(
     id: id,
@@ -1288,6 +1429,9 @@ Future<_DownloadedComicData> _downloadPicacg(
     directory: _safeId(id),
     downloadedJson: downloadedJson,
   );
+  } finally {
+    httpClient.close(force: true);
+  }
 }
 
 Future<_DownloadedComicData> _downloadEhentai(
@@ -1333,6 +1477,8 @@ Future<_DownloadedComicData> _downloadEhentai(
     return res;
   }
 
+  final httpClient = HttpClient();
+  try {
   ctx.setMessage('fetch gallery info');
   final galleryRes = await _httpGetBytesWithRetry(
     galleryUri,
@@ -1341,6 +1487,7 @@ Future<_DownloadedComicData> _downloadEhentai(
     retries: 2,
     maxBytes: 12 * 1024 * 1024,
     stopCheck: ctx.stopCheck,
+    client: httpClient,
   );
   final doc = html.parse(galleryRes.bodyText());
 
@@ -1415,6 +1562,7 @@ Future<_DownloadedComicData> _downloadEhentai(
       retries: 2,
       maxBytes: 12 * 1024 * 1024,
       stopCheck: ctx.stopCheck,
+      client: httpClient,
     );
     final d = html.parse(res.bodyText());
     for (final a in d.querySelectorAll('div#gdt > a')) {
@@ -1437,69 +1585,92 @@ Future<_DownloadedComicData> _downloadEhentai(
   ctx.setTotal((coverPath.isEmpty ? 0 : 1) + readerLinks.length);
   ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
+  final fileConcurrent = _concurrencyPolicy.fileConcurrent('ehentai');
+  final jobs = <Future<void> Function()>[];
+
   if (coverPath.isNotEmpty) {
-    ctx.setMessage('download cover');
     final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
     if (!_nonEmptyFileExists(coverFile)) {
-      ctx.throwIfStopped();
+      jobs.add(() async {
+        ctx.setMessage('download cover');
+        await _downloadToFile(
+          Uri.parse(coverPath),
+          coverFile,
+          headers: headersBase,
+          timeout: const Duration(minutes: 2),
+          maxBytes: 20 * 1024 * 1024,
+          retries: _retryPolicy.fileRetries('ehentai'),
+          stopCheck: ctx.stopCheck,
+          client: httpClient,
+        );
+        ctx.advance();
+      });
+    }
+  }
+
+  for (var i = 0; i < readerLinks.length; i++) {
+    final idx = i + 1;
+    final link = readerLinks[i];
+    if (_pageFileExists(pagesDir, idx)) continue;
+    jobs.add(() async {
+      ctx.setMessage('fetch page $idx/${readerLinks.length}');
+      final pageRes = await _httpGetBytesWithRetry(
+        Uri.parse(link),
+        headers: {
+          ...headersBase,
+          'referer': galleryUri.toString(),
+        },
+        timeout: const Duration(seconds: 25),
+        retries: 2,
+        maxBytes: 8 * 1024 * 1024,
+        stopCheck: ctx.stopCheck,
+        client: httpClient,
+      );
+      final pageDoc = html.parse(pageRes.bodyText());
+      var imgUrl =
+          pageDoc.querySelector('div#i3 > a > img')?.attributes['src'] ?? '';
+      imgUrl = imgUrl.trim();
+      if (imgUrl.isEmpty) {
+        throw StateError('missing image url');
+      }
+      if (imgUrl.contains('509.gif')) {
+        throw StateError('image limit exceeded');
+      }
+
+      ctx.setMessage('download page $idx/${readerLinks.length}');
+      final uri = Uri.parse(imgUrl);
+      final ext = _guessExtFromUrl(uri, fallback: 'jpg');
       await _downloadToFile(
-        Uri.parse(coverPath),
-        coverFile,
-        headers: headersBase,
-        timeout: const Duration(minutes: 2),
-        maxBytes: 20 * 1024 * 1024,
+        uri,
+        File(p.join(pagesDir.path, '$idx.$ext')),
+        headers: {
+          ...headersBase,
+          'referer': link,
+        },
+        timeout: const Duration(minutes: 5),
+        maxBytes: 80 * 1024 * 1024,
         retries: _retryPolicy.fileRetries('ehentai'),
         stopCheck: ctx.stopCheck,
+        client: httpClient,
       );
       ctx.advance();
-    }
+    });
   }
 
-  var idx = 0;
-  for (final link in readerLinks) {
-    ctx.throwIfStopped();
-    idx++;
-    ctx.setMessage('fetch page $idx/${readerLinks.length}');
-    final pageRes = await _httpGetBytesWithRetry(
-      Uri.parse(link),
-      headers: {
-        ...headersBase,
-        'referer': galleryUri.toString(),
-      },
-      timeout: const Duration(seconds: 25),
-      retries: 2,
-      maxBytes: 8 * 1024 * 1024,
-      stopCheck: ctx.stopCheck,
-    );
-    final pageDoc = html.parse(pageRes.bodyText());
-    var imgUrl =
-        pageDoc.querySelector('div#i3 > a > img')?.attributes['src'] ?? '';
-    imgUrl = imgUrl.trim();
-    if (imgUrl.isEmpty) {
-      throw StateError('missing image url');
-    }
-    if (imgUrl.contains('509.gif')) {
-      throw StateError('image limit exceeded');
-    }
-
-    ctx.setMessage('download page $idx/${readerLinks.length}');
-    final uri = Uri.parse(imgUrl);
-    final ext = _guessExtFromUrl(uri, fallback: 'jpg');
-    if (_pageFileExists(pagesDir, idx)) continue;
-    await _downloadToFile(
-      uri,
-      File(p.join(pagesDir.path, '$idx.$ext')),
-      headers: {
-        ...headersBase,
-        'referer': link,
-      },
-      timeout: const Duration(minutes: 5),
-      maxBytes: 80 * 1024 * 1024,
-      retries: _retryPolicy.fileRetries('ehentai'),
-      stopCheck: ctx.stopCheck,
-    );
-    ctx.advance();
+  var closed = false;
+  void abort() {
+    if (closed) return;
+    closed = true;
+    httpClient.close(force: true);
   }
+
+  await _forEachConcurrent(
+    jobs,
+    fileConcurrent,
+    (job) => job(),
+    stopCheck: ctx.stopCheck,
+    onError: abort,
+  );
 
   final galleryJson = <String, dynamic>{
     'title': title.isEmpty ? id : title,
@@ -1534,6 +1705,9 @@ Future<_DownloadedComicData> _downloadEhentai(
     directory: directory,
     downloadedJson: downloadedJson,
   );
+  } finally {
+    httpClient.close(force: true);
+  }
 }
 
 Future<_DownloadedComicData> _downloadJm(
@@ -1565,6 +1739,8 @@ Future<_DownloadedComicData> _downloadJm(
       'Mozilla/5.0 (Linux; Android 10; K; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/138.0.0.0 Mobile Safari/537.36';
   const imgUa = 'Dalvik/2.1.0 (Linux; Android 10; K)';
 
+  final httpClient = HttpClient();
+  try {
   Map<String, String> baseHeaders(int time, {bool post = false}) {
     final token = md5.convert(utf8.encode('$time$jmAuthKey')).toString();
     return {
@@ -1634,6 +1810,7 @@ Future<_DownloadedComicData> _downloadJm(
           timeout: const Duration(seconds: 20),
           maxBytes: 12 * 1024 * 1024,
           stopCheck: ctx.stopCheck,
+          client: httpClient,
         );
 
         if (res.statusCode == 401) {
@@ -1887,6 +2064,7 @@ Future<_DownloadedComicData> _downloadJm(
       maxBytes: 20 * 1024 * 1024,
       retries: _retryPolicy.fileRetries('jm'),
       stopCheck: ctx.stopCheck,
+      client: httpClient,
     );
     ctx.advance();
   }
@@ -1923,6 +2101,9 @@ Future<_DownloadedComicData> _downloadJm(
   ctx.setTotal(1 + totalPages);
   ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
+  final fileConcurrent = _concurrencyPolicy.fileConcurrent('jm');
+  final jobs = <Future<void> Function()>[];
+
   for (final entry in chapterImages.entries) {
     final epNo = entry.key;
     final chapterId = chaptersToDownload[epNo] ?? '';
@@ -1930,76 +2111,92 @@ Future<_DownloadedComicData> _downloadJm(
     final epDir = Directory(p.join(pagesRoot.path, epNo.toString()));
     epDir.createSync(recursive: true);
 
-    var pageNo = 0;
-    for (final u in urls) {
-      ctx.throwIfStopped();
-      pageNo++;
-      ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
-      final uri = Uri.parse(u);
-      final imageName =
-          uri.pathSegments.isNotEmpty ? uri.pathSegments.last : '';
-      final pictureName = imageName.contains('.')
-          ? imageName.substring(0, imageName.lastIndexOf('.'))
-          : imageName;
-      final ext = _guessExtFromUrl(uri);
-
+    for (var i = 0; i < urls.length; i++) {
+      final pageNo = i + 1;
       if (_pageFileExists(epDir, pageNo)) continue;
+      final u = urls[i];
+      jobs.add(() async {
+        ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
+        final uri = Uri.parse(u);
+        final imageName =
+            uri.pathSegments.isNotEmpty ? uri.pathSegments.last : '';
+        final pictureName = imageName.contains('.')
+            ? imageName.substring(0, imageName.lastIndexOf('.'))
+            : imageName;
+        final ext = _guessExtFromUrl(uri);
 
-      final bytesRes = await _httpGetBytesWithRetry(
-        uri,
-        headers: {
-          'user-agent': imgUa,
-          'referer': 'https://localhost/',
-          'accept':
-              'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-          // Same as api: don't advertise brotli/zstd to Dart HttpClient.
-          'accept-encoding': 'gzip',
-          'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-          'x-requested-with': 'com.example.app',
-        },
-        timeout: const Duration(minutes: 2),
-        retries: 2,
-        maxBytes: 80 * 1024 * 1024,
-        stopCheck: ctx.stopCheck,
-      );
+        final bytesRes = await _httpGetBytesWithRetry(
+          uri,
+          headers: {
+            'user-agent': imgUa,
+            'referer': 'https://localhost/',
+            'accept':
+                'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            // Same as api: don't advertise brotli/zstd to Dart HttpClient.
+            'accept-encoding': 'gzip',
+            'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'x-requested-with': 'com.example.app',
+          },
+          timeout: const Duration(minutes: 2),
+          retries: 2,
+          maxBytes: 80 * 1024 * 1024,
+          stopCheck: ctx.stopCheck,
+          client: httpClient,
+        );
 
-      Uint8List outBytes = bytesRes.body;
-      String outExt = ext;
-      if (ext != 'gif') {
-        final debug = Platform.environment['PICA_TASK_DEBUG'] == '1';
-        final ct = (bytesRes.contentType ?? '').toLowerCase();
-        if (ct.isNotEmpty && !ct.startsWith('image/')) {
-          final preview = debug
-              ? '\n${utf8.decode(outBytes.take(300).toList(), allowMalformed: true)}'
-              : '';
-          throw StateError('jm image not image: $ct ($uri)$preview');
+        Uint8List outBytes = bytesRes.body;
+        String outExt = ext;
+        if (ext != 'gif') {
+          final debug = Platform.environment['PICA_TASK_DEBUG'] == '1';
+          final ct = (bytesRes.contentType ?? '').toLowerCase();
+          if (ct.isNotEmpty && !ct.startsWith('image/')) {
+            final preview = debug
+                ? '\n${utf8.decode(outBytes.take(300).toList(), allowMalformed: true)}'
+                : '';
+            throw StateError('jm image not image: $ct ($uri)$preview');
+          }
+          try {
+            outBytes = recombineJm(outBytes, chapterId, pictureName);
+          } catch (e) {
+            final hex = outBytes.isEmpty
+                ? ''
+                : outBytes
+                    .take(16)
+                    .map((b) => b.toRadixString(16).padLeft(2, '0'))
+                    .join(' ');
+            final preview = debug
+                ? '\ncontent-type: ${bytesRes.contentType}\nlen: ${outBytes.length}\nhex: $hex'
+                : '';
+            throw StateError('jm recombine failed: $e ($uri)$preview');
+          }
+          outExt = 'jpg';
         }
-        try {
-          outBytes = recombineJm(outBytes, chapterId, pictureName);
-        } catch (e) {
-          final hex = outBytes.isEmpty
-              ? ''
-              : outBytes
-                  .take(16)
-                  .map((b) => b.toRadixString(16).padLeft(2, '0'))
-                  .join(' ');
-          final preview = debug
-              ? '\ncontent-type: ${bytesRes.contentType}\nlen: ${outBytes.length}\nhex: $hex'
-              : '';
-          throw StateError('jm recombine failed: $e ($uri)$preview');
-        }
-        outExt = 'jpg';
-      }
 
-      final outPath = p.join(epDir.path, '$pageNo.$outExt');
-      final outFile = File(outPath);
-      if (_pageFileExists(epDir, pageNo)) continue;
-      if (outFile.existsSync()) outFile.deleteSync();
-      outFile.createSync(recursive: true);
-      outFile.writeAsBytesSync(outBytes);
-      ctx.advance();
+        final outPath = p.join(epDir.path, '$pageNo.$outExt');
+        final outFile = File(outPath);
+        if (_pageFileExists(epDir, pageNo)) return;
+        if (outFile.existsSync()) outFile.deleteSync();
+        outFile.createSync(recursive: true);
+        outFile.writeAsBytesSync(outBytes);
+        ctx.advance();
+      });
     }
   }
+
+  var closed = false;
+  void abort() {
+    if (closed) return;
+    closed = true;
+    httpClient.close(force: true);
+  }
+
+  await _forEachConcurrent(
+    jobs,
+    fileConcurrent,
+    (job) => job(),
+    stopCheck: ctx.stopCheck,
+    onError: abort,
+  );
 
   return _DownloadedComicData(
     id: id,
@@ -2010,6 +2207,9 @@ Future<_DownloadedComicData> _downloadJm(
     directory: directory,
     downloadedJson: downloadedJson,
   );
+  } finally {
+    httpClient.close(force: true);
+  }
 }
 
 Future<_DownloadedComicData> _downloadHitomi(
@@ -2037,6 +2237,8 @@ Future<_DownloadedComicData> _downloadHitomi(
     'referer': 'https://hitomi.la/reader/$rawId.html',
   };
 
+  final httpClient = HttpClient();
+  try {
   Future<_HttpRes> getText(String url) {
     return _httpGetBytesWithRetry(
       Uri.parse(url),
@@ -2045,6 +2247,7 @@ Future<_DownloadedComicData> _downloadHitomi(
       retries: 2,
       maxBytes: 12 * 1024 * 1024,
       stopCheck: ctx.stopCheck,
+      client: httpClient,
     );
   }
 
@@ -2221,6 +2424,7 @@ Future<_DownloadedComicData> _downloadHitomi(
         maxBytes: 20 * 1024 * 1024,
         retries: _retryPolicy.fileRetries('hitomi'),
         stopCheck: ctx.stopCheck,
+        client: httpClient,
       );
       ctx.advance();
     }
@@ -2229,41 +2433,62 @@ Future<_DownloadedComicData> _downloadHitomi(
   ctx.throwIfStopped();
   await ensureGg();
 
-  var idx = 0;
-  for (final f in files) {
-    ctx.throwIfStopped();
-    idx++;
-    ctx.setMessage('download pages ($idx/${files.length})');
+  final fileConcurrent = _concurrencyPolicy.fileConcurrent('hitomi');
+  final jobs = <Future<void> Function()>[];
+
+  for (var i = 0; i < files.length; i++) {
+    final idx = i + 1;
     if (_pageFileExists(pagesDir, idx)) continue;
-    final uriWebp = Uri.parse(urlFromHash(f, 'webp', null));
-    String ext = 'webp';
-    try {
-      await _downloadToFile(
-        uriWebp,
-        File(p.join(pagesDir.path, '$idx.$ext')),
-        headers: headers,
-        timeout: const Duration(minutes: 5),
-        maxBytes: 50 * 1024 * 1024,
-        retries: _retryPolicy.fileRetries('hitomi'),
-        stopCheck: ctx.stopCheck,
-      );
-    } catch (_) {
-      ctx.throwIfStopped();
-      final name = (f['name'] ?? '').toString();
-      ext = name.contains('.') ? name.split('.').last : 'jpg';
-      final uri2 = Uri.parse(urlFromHash(f, null, null));
-      await _downloadToFile(
-        uri2,
-        File(p.join(pagesDir.path, '$idx.$ext')),
-        headers: headers,
-        timeout: const Duration(minutes: 5),
-        maxBytes: 50 * 1024 * 1024,
-        retries: _retryPolicy.fileRetries('hitomi'),
-        stopCheck: ctx.stopCheck,
-      );
-    }
-    ctx.advance();
+    final f = files[i];
+    jobs.add(() async {
+      ctx.setMessage('download pages ($idx/${files.length})');
+      final uriWebp = Uri.parse(urlFromHash(f, 'webp', null));
+      String ext = 'webp';
+      try {
+        await _downloadToFile(
+          uriWebp,
+          File(p.join(pagesDir.path, '$idx.$ext')),
+          headers: headers,
+          timeout: const Duration(minutes: 5),
+          maxBytes: 50 * 1024 * 1024,
+          retries: _retryPolicy.fileRetries('hitomi'),
+          stopCheck: ctx.stopCheck,
+          client: httpClient,
+        );
+      } catch (_) {
+        ctx.throwIfStopped();
+        final name = (f['name'] ?? '').toString();
+        ext = name.contains('.') ? name.split('.').last : 'jpg';
+        final uri2 = Uri.parse(urlFromHash(f, null, null));
+        await _downloadToFile(
+          uri2,
+          File(p.join(pagesDir.path, '$idx.$ext')),
+          headers: headers,
+          timeout: const Duration(minutes: 5),
+          maxBytes: 50 * 1024 * 1024,
+          retries: _retryPolicy.fileRetries('hitomi'),
+          stopCheck: ctx.stopCheck,
+          client: httpClient,
+        );
+      }
+      ctx.advance();
+    });
   }
+
+  var closed = false;
+  void abort() {
+    if (closed) return;
+    closed = true;
+    httpClient.close(force: true);
+  }
+
+  await _forEachConcurrent(
+    jobs,
+    fileConcurrent,
+    (job) => job(),
+    stopCheck: ctx.stopCheck,
+    onError: abort,
+  );
 
   final hitomiComicMap = <String, dynamic>{
     'id': rawId,
@@ -2291,6 +2516,9 @@ Future<_DownloadedComicData> _downloadHitomi(
     directory: directory,
     downloadedJson: downloadedJson,
   );
+  } finally {
+    httpClient.close(force: true);
+  }
 }
 
 Future<_DownloadedComicData> _downloadHtmanga(
@@ -2332,6 +2560,8 @@ Future<_DownloadedComicData> _downloadHtmanga(
     return '$baseUrl/$v';
   }
 
+  final httpClient = HttpClient();
+  try {
   ctx.setMessage('fetch comic info');
   final infoUrl = Uri.parse('$baseUrl/photos-index-page-1-aid-$rawId.html');
   final infoRes = await _httpGetBytesWithRetry(
@@ -2340,6 +2570,8 @@ Future<_DownloadedComicData> _downloadHtmanga(
     timeout: const Duration(seconds: 20),
     retries: 2,
     maxBytes: 6 * 1024 * 1024,
+    stopCheck: ctx.stopCheck,
+    client: httpClient,
   );
   final doc = html.parse(infoRes.bodyText());
 
@@ -2389,6 +2621,7 @@ Future<_DownloadedComicData> _downloadHtmanga(
     retries: 2,
     maxBytes: 20 * 1024 * 1024,
     stopCheck: ctx.stopCheck,
+    client: httpClient,
   );
   final matches =
       RegExp(r'(?<=//)[\w./\[\]()-]+').allMatches(galleryRes.bodyText());
@@ -2411,44 +2644,66 @@ Future<_DownloadedComicData> _downloadHtmanga(
   ctx.setTotal(total);
   ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
+  final fileConcurrent = _concurrencyPolicy.fileConcurrent('htmanga');
+  final jobs = <Future<void> Function()>[];
+
   if (coverUrl.isNotEmpty) {
-    ctx.setMessage('download cover');
     final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
     if (!_nonEmptyFileExists(coverFile)) {
-      ctx.throwIfStopped();
-      await _downloadToFile(
-        Uri.parse(coverUrl),
-        coverFile,
-        headers: headers,
-        timeout: const Duration(minutes: 2),
-        maxBytes: 20 * 1024 * 1024,
-        retries: _retryPolicy.fileRetries('htmanga'),
-        stopCheck: ctx.stopCheck,
-      );
-      ctx.advance();
+      jobs.add(() async {
+        ctx.setMessage('download cover');
+        await _downloadToFile(
+          Uri.parse(coverUrl),
+          coverFile,
+          headers: headers,
+          timeout: const Duration(minutes: 2),
+          maxBytes: 20 * 1024 * 1024,
+          retries: _retryPolicy.fileRetries('htmanga'),
+          stopCheck: ctx.stopCheck,
+          client: httpClient,
+        );
+        ctx.advance();
+      });
     }
   }
 
-  var idx = 0;
-  for (final u in imageUrls) {
-    ctx.throwIfStopped();
-    idx++;
-    ctx.setMessage('download pages ($idx/${imageUrls.length})');
+  for (var i = 0; i < imageUrls.length; i++) {
+    final idx = i + 1;
     if (_pageFileExists(pagesDir, idx)) continue;
-    final uri = Uri.parse(u);
-    final ext = _guessExtFromUrl(uri);
-    final outPath = p.join(pagesDir.path, '$idx.$ext');
-    await _downloadToFile(
-      uri,
-      File(outPath),
-      headers: headers,
-      timeout: const Duration(minutes: 5),
-      maxBytes: 50 * 1024 * 1024,
-      retries: _retryPolicy.fileRetries('htmanga'),
-      stopCheck: ctx.stopCheck,
-    );
-    ctx.advance();
+    final u = imageUrls[i];
+    jobs.add(() async {
+      ctx.setMessage('download pages ($idx/${imageUrls.length})');
+      final uri = Uri.parse(u);
+      final ext = _guessExtFromUrl(uri);
+      final outPath = p.join(pagesDir.path, '$idx.$ext');
+      await _downloadToFile(
+        uri,
+        File(outPath),
+        headers: headers,
+        timeout: const Duration(minutes: 5),
+        maxBytes: 50 * 1024 * 1024,
+        retries: _retryPolicy.fileRetries('htmanga'),
+        stopCheck: ctx.stopCheck,
+        client: httpClient,
+      );
+      ctx.advance();
+    });
   }
+
+  var closed = false;
+  void abort() {
+    if (closed) return;
+    closed = true;
+    httpClient.close(force: true);
+  }
+
+  await _forEachConcurrent(
+    jobs,
+    fileConcurrent,
+    (job) => job(),
+    stopCheck: ctx.stopCheck,
+    onError: abort,
+  );
 
   final comicJson = <String, dynamic>{
     'id': rawId,
@@ -2477,6 +2732,9 @@ Future<_DownloadedComicData> _downloadHtmanga(
     directory: directory,
     downloadedJson: downloadedJson,
   );
+  } finally {
+    httpClient.close(force: true);
+  }
 }
 
 Future<_DownloadedComicData> _downloadNhentai(
@@ -2509,6 +2767,8 @@ Future<_DownloadedComicData> _downloadNhentai(
     if (cookie.isNotEmpty) 'cookie': cookie,
   };
 
+  final httpClient = HttpClient();
+  try {
   ctx.setMessage('fetch comic info');
   ctx.throwIfStopped();
   final apiRes = await _httpGetBytesWithRetry(
@@ -2518,6 +2778,7 @@ Future<_DownloadedComicData> _downloadNhentai(
     retries: 2,
     maxBytes: 3 * 1024 * 1024,
     stopCheck: ctx.stopCheck,
+    client: httpClient,
   );
 
   Object? decoded;
@@ -2599,43 +2860,65 @@ Future<_DownloadedComicData> _downloadNhentai(
   ctx.setTotal(total);
   ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
+  final fileConcurrent = _concurrencyPolicy.fileConcurrent('nhentai');
+  final jobs = <Future<void> Function()>[];
+
   if (cover.isNotEmpty) {
-    ctx.setMessage('download cover');
     final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
     if (!_nonEmptyFileExists(coverFile)) {
-      ctx.throwIfStopped();
-      await _downloadToFile(
-        Uri.parse(cover),
-        coverFile,
-        headers: headers,
-        timeout: const Duration(minutes: 2),
-        maxBytes: 20 * 1024 * 1024,
-        retries: _retryPolicy.fileRetries('nhentai'),
-        stopCheck: ctx.stopCheck,
-      );
-      ctx.advance();
+      jobs.add(() async {
+        ctx.setMessage('download cover');
+        await _downloadToFile(
+          Uri.parse(cover),
+          coverFile,
+          headers: headers,
+          timeout: const Duration(minutes: 2),
+          maxBytes: 20 * 1024 * 1024,
+          retries: _retryPolicy.fileRetries('nhentai'),
+          stopCheck: ctx.stopCheck,
+          client: httpClient,
+        );
+        ctx.advance();
+      });
     }
   }
 
-  var idx = 0;
-  for (final u in imageUrls) {
-    ctx.throwIfStopped();
-    idx++;
-    ctx.setMessage('download pages ($idx/${imageUrls.length})');
+  for (var i = 0; i < imageUrls.length; i++) {
+    final idx = i + 1;
     if (_pageFileExists(pagesDir, idx)) continue;
-    final uri = Uri.parse(u);
-    final ext = _guessExtFromUrl(uri);
-    await _downloadToFile(
-      uri,
-      File(p.join(pagesDir.path, '$idx.$ext')),
-      headers: headers,
-      timeout: const Duration(minutes: 5),
-      maxBytes: 50 * 1024 * 1024,
-      retries: _retryPolicy.fileRetries('nhentai'),
-      stopCheck: ctx.stopCheck,
-    );
-    ctx.advance();
+    final u = imageUrls[i];
+    jobs.add(() async {
+      ctx.setMessage('download pages ($idx/${imageUrls.length})');
+      final uri = Uri.parse(u);
+      final ext = _guessExtFromUrl(uri);
+      await _downloadToFile(
+        uri,
+        File(p.join(pagesDir.path, '$idx.$ext')),
+        headers: headers,
+        timeout: const Duration(minutes: 5),
+        maxBytes: 50 * 1024 * 1024,
+        retries: _retryPolicy.fileRetries('nhentai'),
+        stopCheck: ctx.stopCheck,
+        client: httpClient,
+      );
+      ctx.advance();
+    });
   }
+
+  var closed = false;
+  void abort() {
+    if (closed) return;
+    closed = true;
+    httpClient.close(force: true);
+  }
+
+  await _forEachConcurrent(
+    jobs,
+    fileConcurrent,
+    (job) => job(),
+    stopCheck: ctx.stopCheck,
+    onError: abort,
+  );
 
   final downloadedJson = <String, dynamic>{
     'comicID': id,
@@ -2654,6 +2937,9 @@ Future<_DownloadedComicData> _downloadNhentai(
     directory: directory,
     downloadedJson: downloadedJson,
   );
+  } finally {
+    httpClient.close(force: true);
+  }
 }
 
 Handler buildHandler({
@@ -2662,12 +2948,21 @@ Handler buildHandler({
   bool enableUserdata = false,
   int fileRetriesDefault = 2,
   Map<String, int> fileRetriesBySource = const {},
+  int fileConcurrentDefault = 6,
+  Map<String, int> fileConcurrentBySource = const {},
 }) {
   _retryPolicy = _RetryPolicy(
     fileRetriesDefault: fileRetriesDefault,
     fileRetriesBySource: {
       ..._retryPolicy.fileRetriesBySource,
       ...fileRetriesBySource,
+    },
+  );
+  _concurrencyPolicy = _ConcurrencyPolicy(
+    fileConcurrentDefault: fileConcurrentDefault,
+    fileConcurrentBySource: {
+      ..._concurrencyPolicy.fileConcurrentBySource,
+      ...fileConcurrentBySource,
     },
   );
 
@@ -3283,19 +3578,46 @@ Handler buildHandler({
     return _json(200, {
       'ok': true,
       'maxConcurrent': taskRunner.maxConcurrent,
+      'fileConcurrent': _concurrencyPolicy.fileConcurrentDefault,
     });
   });
 
   api.put('/v1/tasks/config', (Request req) async {
     final json = await readJsonMap(req);
     if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
-    final raw = json['maxConcurrent'];
-    final v = int.tryParse((raw ?? '').toString());
-    if (v == null) {
-      return _json(400, {'ok': false, 'error': 'missing maxConcurrent'});
+
+    var changed = false;
+
+    final rawMax = json['maxConcurrent'];
+    final vMax = int.tryParse((rawMax ?? '').toString());
+    if (vMax != null) {
+      taskRunner.setMaxConcurrent(vMax);
+      changed = true;
     }
-    taskRunner.setMaxConcurrent(v);
-    return _json(200, {'ok': true, 'maxConcurrent': taskRunner.maxConcurrent});
+
+    final rawFile = json['fileConcurrent'];
+    final vFile = int.tryParse((rawFile ?? '').toString());
+    if (vFile != null) {
+      final next = vFile.clamp(1, 16);
+      _concurrencyPolicy = _ConcurrencyPolicy(
+        fileConcurrentDefault: next,
+        fileConcurrentBySource: _concurrencyPolicy.fileConcurrentBySource,
+      );
+      changed = true;
+    }
+
+    if (!changed) {
+      return _json(400, {
+        'ok': false,
+        'error': 'missing maxConcurrent/fileConcurrent',
+      });
+    }
+
+    return _json(200, {
+      'ok': true,
+      'maxConcurrent': taskRunner.maxConcurrent,
+      'fileConcurrent': _concurrencyPolicy.fileConcurrentDefault,
+    });
   });
 
   api.post('/v1/tasks/<id>/pause', (Request req, String id) {
