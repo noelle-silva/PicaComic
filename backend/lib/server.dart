@@ -18,7 +18,35 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-const _picaServerBuild = '2026-02-21.5';
+const _picaServerBuild = '2026-02-21.6';
+
+class _RetryPolicy {
+  final int fileRetriesDefault;
+  final Map<String, int> fileRetriesBySource;
+
+  const _RetryPolicy({
+    required this.fileRetriesDefault,
+    required this.fileRetriesBySource,
+  });
+
+  int fileRetries(String source) {
+    final v = fileRetriesBySource[source];
+    if (v != null) return v.clamp(0, 10);
+    return fileRetriesDefault.clamp(0, 10);
+  }
+}
+
+_RetryPolicy _retryPolicy = const _RetryPolicy(
+  fileRetriesDefault: 2,
+  fileRetriesBySource: {
+    'picacg': 2,
+    'ehentai': 1,
+    'jm': 2,
+    'hitomi': 2,
+    'htmanga': 2,
+    'nhentai': 3,
+  },
+);
 
 Future<void> _downloadToFile(
   Uri uri,
@@ -821,6 +849,7 @@ Future<_DownloadedComicData> _downloadPicacg(
       File(p.join(comicDir.path, 'cover.jpg')),
       timeout: const Duration(minutes: 2),
       maxBytes: 20 * 1024 * 1024,
+      retries: _retryPolicy.fileRetries('picacg'),
     );
     ctx.advance();
   }
@@ -841,6 +870,7 @@ Future<_DownloadedComicData> _downloadPicacg(
         File(p.join(epDir.path, '$pageNo.$ext')),
         timeout: const Duration(minutes: 5),
         maxBytes: 50 * 1024 * 1024,
+        retries: _retryPolicy.fileRetries('picacg'),
       );
       ctx.advance();
     }
@@ -1009,6 +1039,7 @@ Future<_DownloadedComicData> _downloadEhentai(
       headers: headersBase,
       timeout: const Duration(minutes: 2),
       maxBytes: 20 * 1024 * 1024,
+      retries: _retryPolicy.fileRetries('ehentai'),
     );
     ctx.advance();
   }
@@ -1050,6 +1081,7 @@ Future<_DownloadedComicData> _downloadEhentai(
       },
       timeout: const Duration(minutes: 5),
       maxBytes: 80 * 1024 * 1024,
+      retries: _retryPolicy.fileRetries('ehentai'),
     );
     ctx.advance();
   }
@@ -1380,6 +1412,7 @@ Future<_DownloadedComicData> _downloadJm(
     headers: {'user-agent': ua, 'referer': 'https://localhost/'},
     timeout: const Duration(minutes: 2),
     maxBytes: 20 * 1024 * 1024,
+    retries: _retryPolicy.fileRetries('jm'),
   );
   ctx.advance();
 
@@ -1700,7 +1733,7 @@ Future<_DownloadedComicData> _downloadHitomi(
       headers: headers,
       timeout: const Duration(minutes: 2),
       maxBytes: 20 * 1024 * 1024,
-      retries: 3,
+      retries: _retryPolicy.fileRetries('hitomi'),
     );
     ctx.advance();
   }
@@ -1720,6 +1753,7 @@ Future<_DownloadedComicData> _downloadHitomi(
         headers: headers,
         timeout: const Duration(minutes: 5),
         maxBytes: 50 * 1024 * 1024,
+        retries: _retryPolicy.fileRetries('hitomi'),
       );
     } catch (_) {
       final name = (f['name'] ?? '').toString();
@@ -1731,6 +1765,7 @@ Future<_DownloadedComicData> _downloadHitomi(
         headers: headers,
         timeout: const Duration(minutes: 5),
         maxBytes: 50 * 1024 * 1024,
+        retries: _retryPolicy.fileRetries('hitomi'),
       );
     }
     ctx.advance();
@@ -1889,6 +1924,7 @@ Future<_DownloadedComicData> _downloadHtmanga(
       headers: headers,
       timeout: const Duration(minutes: 2),
       maxBytes: 20 * 1024 * 1024,
+      retries: _retryPolicy.fileRetries('htmanga'),
     );
     ctx.advance();
   }
@@ -1906,6 +1942,7 @@ Future<_DownloadedComicData> _downloadHtmanga(
       headers: headers,
       timeout: const Duration(minutes: 5),
       maxBytes: 50 * 1024 * 1024,
+      retries: _retryPolicy.fileRetries('htmanga'),
     );
     ctx.advance();
   }
@@ -2054,6 +2091,7 @@ Future<_DownloadedComicData> _downloadNhentai(
       headers: headers,
       timeout: const Duration(minutes: 2),
       maxBytes: 20 * 1024 * 1024,
+      retries: _retryPolicy.fileRetries('nhentai'),
     );
     ctx.advance();
   }
@@ -2070,7 +2108,7 @@ Future<_DownloadedComicData> _downloadNhentai(
       headers: headers,
       timeout: const Duration(minutes: 5),
       maxBytes: 50 * 1024 * 1024,
-      retries: 3,
+      retries: _retryPolicy.fileRetries('nhentai'),
     );
     ctx.advance();
   }
@@ -2098,7 +2136,17 @@ Handler buildHandler({
   required String storageDir,
   String? apiKey,
   bool enableUserdata = false,
+  int fileRetriesDefault = 2,
+  Map<String, int> fileRetriesBySource = const {},
 }) {
+  _retryPolicy = _RetryPolicy(
+    fileRetriesDefault: fileRetriesDefault,
+    fileRetriesBySource: {
+      ..._retryPolicy.fileRetriesBySource,
+      ...fileRetriesBySource,
+    },
+  );
+
   final storage = Directory(storageDir);
   storage.createSync(recursive: true);
 
@@ -2572,6 +2620,7 @@ Handler buildHandler({
         outZip,
         headers: headers,
         maxBytes: 4 * 1024 * 1024 * 1024,
+        retries: _retryPolicy.fileRetriesDefault,
       );
       return await ingestComicZip(meta: meta, zipPath: outZip.path);
     } catch (e) {

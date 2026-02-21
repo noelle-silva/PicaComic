@@ -15,16 +15,39 @@ Future<void> main(List<String> args) async {
   String envOrDot(String key, String fallback) =>
       Platform.environment[key] ?? dotEnv[key] ?? fallback;
 
+  String? envOrDotNullable(String key) =>
+      Platform.environment[key] ?? dotEnv[key];
+
+  int intOr(String? input, int fallback, {int min = 0, int max = 10}) {
+    final v = int.tryParse((input ?? '').trim()) ?? fallback;
+    if (v < min) return min;
+    if (v > max) return max;
+    return v;
+  }
+
   final bind = envOrDot('PICA_BIND', '0.0.0.0');
   final port = int.tryParse(envOrDot('PICA_PORT', '8080')) ?? 8080;
   final storage = envOrDot('PICA_STORAGE', './storage');
   final apiKey = Platform.environment['PICA_API_KEY'] ?? dotEnv['PICA_API_KEY'];
   final enableUserdata = envOrDot('PICA_ENABLE_USERDATA', '0').trim() == '1';
 
+  final fileRetriesDefault =
+      intOr(envOrDotNullable('PICA_FILE_RETRIES_DEFAULT'), 2);
+  final fileRetriesBySource = <String, int>{
+    'picacg': intOr(envOrDotNullable('PICA_FILE_RETRIES_PICACG'), 2),
+    'ehentai': intOr(envOrDotNullable('PICA_FILE_RETRIES_EHENTAI'), 1),
+    'jm': intOr(envOrDotNullable('PICA_FILE_RETRIES_JM'), 2),
+    'hitomi': intOr(envOrDotNullable('PICA_FILE_RETRIES_HITOMI'), 2),
+    'htmanga': intOr(envOrDotNullable('PICA_FILE_RETRIES_HTMANGA'), 2),
+    'nhentai': intOr(envOrDotNullable('PICA_FILE_RETRIES_NHENTAI'), 3),
+  };
+
   final handler = buildHandler(
     storageDir: storage,
     apiKey: apiKey,
     enableUserdata: enableUserdata,
+    fileRetriesDefault: fileRetriesDefault,
+    fileRetriesBySource: fileRetriesBySource,
   );
 
   final server = await shelf_io.serve(handler, bind, port);

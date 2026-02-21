@@ -19,6 +19,13 @@ dart run bin/server.dart
 - `PICA_STORAGE`：数据目录，默认 `./storage`
 - `PICA_API_KEY`：可选；如果设置，则所有 `/api/*` 请求必须带 `X-Api-Key`
 - `PICA_ENABLE_USERDATA`：可选；默认禁用。设为 `1` 才启用用户数据（`/api/v1/userdata`）上传/下载
+- `PICA_FILE_RETRIES_DEFAULT`：可选；文件下载失败重试次数（0-10），默认 `2`
+- `PICA_FILE_RETRIES_PICACG`：可选；默认 `2`
+- `PICA_FILE_RETRIES_EHENTAI`：可选；默认 `1`
+- `PICA_FILE_RETRIES_JM`：可选；默认 `2`
+- `PICA_FILE_RETRIES_HITOMI`：可选；默认 `2`
+- `PICA_FILE_RETRIES_HTMANGA`：可选；默认 `2`
+- `PICA_FILE_RETRIES_NHENTAI`：可选；默认 `3`
 
 ## .env（推荐）
 
