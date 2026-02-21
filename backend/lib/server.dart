@@ -18,7 +18,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-const _picaServerBuild = '2026-02-21.4';
+const _picaServerBuild = '2026-02-21.5';
 
 Future<void> _downloadToFile(
   Uri uri,
@@ -26,6 +26,7 @@ Future<void> _downloadToFile(
   Map<String, String>? headers,
   Duration timeout = const Duration(minutes: 20),
   int? maxBytes,
+  int retries = 0,
 }) async {
   if (uri.scheme != 'http' && uri.scheme != 'https') {
     throw ArgumentError('unsupported scheme');
@@ -35,48 +36,70 @@ Future<void> _downloadToFile(
   if (!parent.existsSync()) {
     parent.createSync(recursive: true);
   }
-  if (outFile.existsSync()) {
-    outFile.deleteSync();
-  }
 
-  final client = HttpClient()..connectionTimeout = timeout;
-  try {
-    final req = await client.getUrl(uri).timeout(timeout);
-    req.followRedirects = true;
-    req.maxRedirects = 5;
-    headers?.forEach((k, v) {
-      if (k.trim().isEmpty) return;
-      req.headers.set(k, v);
-    });
-
-    final res = await req.close().timeout(timeout);
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw HttpException('bad status: ${res.statusCode}', uri: uri);
-    }
-
-    if (maxBytes != null && res.contentLength >= 0) {
-      if (res.contentLength > maxBytes) {
-        throw StateError('file too large');
+  Object? lastErr;
+  for (var attempt = 0; attempt <= retries; attempt++) {
+    if (outFile.existsSync()) {
+      try {
+        outFile.deleteSync();
+      } catch (_) {
+        // ignore
       }
     }
 
-    final sink = outFile.openWrite();
-    var received = 0;
+    final client = HttpClient()..connectionTimeout = timeout;
     try {
-      await for (final chunk in res) {
-        received += chunk.length;
-        if (maxBytes != null && received > maxBytes) {
+      final req = await client.getUrl(uri).timeout(timeout);
+      req.followRedirects = true;
+      req.maxRedirects = 5;
+      headers?.forEach((k, v) {
+        if (k.trim().isEmpty) return;
+        req.headers.set(k, v);
+      });
+
+      final res = await req.close().timeout(timeout);
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        if (attempt < retries && _isRetryableStatus(res.statusCode)) {
+          await Future.delayed(
+            Duration(milliseconds: 400 * (1 << attempt)),
+          );
+          continue;
+        }
+        throw HttpException('bad status: ${res.statusCode}', uri: uri);
+      }
+
+      if (maxBytes != null && res.contentLength >= 0) {
+        if (res.contentLength > maxBytes) {
           throw StateError('file too large');
         }
-        sink.add(chunk);
       }
+
+      final sink = outFile.openWrite();
+      var received = 0;
+      try {
+        await for (final chunk in res) {
+          received += chunk.length;
+          if (maxBytes != null && received > maxBytes) {
+            throw StateError('file too large');
+          }
+          sink.add(chunk);
+        }
+      } finally {
+        await sink.flush();
+        await sink.close();
+      }
+      return;
+    } catch (e) {
+      lastErr = e;
+      if (attempt >= retries) rethrow;
+      if (e is ArgumentError) rethrow;
+      if (e is StateError) rethrow;
+      await Future.delayed(Duration(milliseconds: 400 * (1 << attempt)));
     } finally {
-      await sink.flush();
-      await sink.close();
+      client.close(force: true);
     }
-  } finally {
-    client.close(force: true);
   }
+  throw lastErr ?? Exception('download failed');
 }
 
 final _secureRandom = Random.secure();
@@ -1677,6 +1700,7 @@ Future<_DownloadedComicData> _downloadHitomi(
       headers: headers,
       timeout: const Duration(minutes: 2),
       maxBytes: 20 * 1024 * 1024,
+      retries: 3,
     );
     ctx.advance();
   }
@@ -2046,6 +2070,7 @@ Future<_DownloadedComicData> _downloadNhentai(
       headers: headers,
       timeout: const Duration(minutes: 5),
       maxBytes: 50 * 1024 * 1024,
+      retries: 3,
     );
     ctx.advance();
   }
