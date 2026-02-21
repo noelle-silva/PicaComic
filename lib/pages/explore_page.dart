@@ -219,6 +219,8 @@ class _SingleExplorePageState extends StateWithController<_SingleExplorePage> {
       setState(() {
         if (res.error) {
           message = res.errorMessageWithoutNull;
+        } else if (res.data.isEmpty) {
+          message = "无数据".tl;
         } else {
           parts = res.data;
         }

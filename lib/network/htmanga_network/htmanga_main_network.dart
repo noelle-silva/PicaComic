@@ -9,6 +9,7 @@ import 'package:pica_comic/network/cookie_jar.dart';
 import 'package:pica_comic/network/htmanga_network/models.dart';
 import 'package:pica_comic/network/app_dio.dart';
 import 'package:pica_comic/network/res.dart';
+import 'package:html/dom.dart' show Element;
 import 'package:html/parser.dart';
 import 'package:pica_comic/pages/pre_search_page.dart';
 import 'package:pica_comic/tools/extensions.dart';
@@ -24,6 +25,109 @@ class HtmangaNetwork {
   HtmangaNetwork._create();
 
   static String get baseUrl => appdata.settings[31];
+
+  String _absUrl(String urlOrPath) {
+    try {
+      return Uri.parse(baseUrl).resolve(urlOrPath).toString();
+    } catch (_) {
+      return urlOrPath;
+    }
+  }
+
+  String _dedupTitle(String title, Map<String, String> map) {
+    if (!map.containsKey(title)) return title;
+    for (int i = 2;; i++) {
+      final t = "$title($i)";
+      if (!map.containsKey(t)) return t;
+    }
+  }
+
+  String? _extractComicId(String url) {
+    final match = RegExp(r"(?:-aid-|aid=)(\d+)").firstMatch(url);
+    return match?.group(1);
+  }
+
+  int _extractPages(String text) {
+    final m = RegExp(r"(\d+)\s*[Pp頁页]").firstMatch(text) ??
+        RegExp(r"頁數[:：]\s*(\d+)").firstMatch(text);
+    if (m == null) return 0;
+    return int.tryParse(m.group(1) ?? "") ?? 0;
+  }
+
+  String _extractTime(String text) {
+    final m = RegExp(r"(\d{4}[-/]\d{1,2}[-/]\d{1,2})").firstMatch(text);
+    return m?.group(1) ?? "";
+  }
+
+  HtComicBrief? _parseComicBrief(Element li) {
+    try {
+      final a = li.querySelector("div.pic_box > a") ?? li.querySelector("a");
+      final href = a?.attributes["href"];
+      if (href == null) return null;
+      final id = _extractComicId(href);
+      if (id == null) return null;
+
+      final img = a?.querySelector("img") ?? li.querySelector("img");
+      final src = img?.attributes["src"] ?? img?.attributes["data-src"];
+      if (src == null || src.isEmpty) return null;
+      final cover = _absUrl(src);
+
+      final titleA = li.querySelector("div.info > div.title > a") ??
+          li.querySelector("div.title > a") ??
+          li.querySelector("a");
+      var name = titleA?.attributes["title"] ?? titleA?.text ?? "";
+      name = name.replaceAll("<em>", "").replaceAll("</em>", "");
+      name = name.replaceAll("\n", "").trim();
+      if (name.isEmpty) return null;
+
+      final infoText = (li.querySelector("div.info > div.info_col")?.text ??
+              li.querySelector(".info_col")?.text ??
+              "")
+          .replaceAll("\n", " ")
+          .trim();
+      final pages = _extractPages(infoText);
+      final time = _extractTime(infoText);
+
+      return HtComicBrief(name, time, cover, id, pages);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  List<HtComicBrief> _parseComicList(Iterable<Element> items) {
+    final res = <HtComicBrief>[];
+    for (final li in items) {
+      final comic = _parseComicBrief(li);
+      if (comic != null) res.add(comic);
+    }
+    return res;
+  }
+
+  Element? _findGalleryListForTitle(Element titleEl) {
+    // Most pages put the comic list in the sibling block right after the title.
+    final parent = titleEl.parent;
+    if (parent != null) {
+      final siblings = parent.children;
+      final idx = siblings.indexOf(titleEl);
+      if (idx != -1) {
+        for (int i = idx + 1; i < siblings.length; i++) {
+          final sib = siblings[i];
+          if (sib.classes.contains("title_sort")) break;
+          final ul = sib.querySelector("div.gallary_wrap > ul.cc") ??
+              sib.querySelector("ul.cc");
+          if (ul != null) return ul;
+        }
+      }
+    }
+
+    var n = titleEl.nextElementSibling;
+    for (int i = 0; i < 8 && n != null; i++) {
+      final ul = n.querySelector("div.gallary_wrap > ul.cc") ?? n.querySelector("ul.cc");
+      if (ul != null) return ul;
+      n = n.nextElementSibling;
+    }
+    return null;
+  }
 
   void logout() {
     SingleInstanceCookieJar.instance?.deleteUri(Uri.parse(baseUrl));
@@ -106,57 +210,67 @@ class HtmangaNetwork {
   }
 
   Future<Res<HtHomePageData>> getHomePage() async {
-    var res = await get(baseUrl, cache: false);
-    if (res.error) {
-      return Res(null, errorMessage: res.errorMessage);
+    final candidates = <String>[
+      baseUrl,
+      _absUrl("/albums.html"),
+    ];
+    if (candidates.length >= 2 && candidates[0] == candidates[1]) {
+      candidates.removeLast();
     }
-    try {
-      var document = parse(res.data);
-      var titles = document.querySelectorAll("div.title_sort");
-      var comicBlocks = document.querySelectorAll("div.bodywrap");
-      Map<String, String> titleRes = {};
-      for (var title in titles) {
-        var text = title.querySelector("div.title_h2")!.text;
-        text = text.replaceAll("\n", "").removeAllBlank;
-        var link = title.querySelector("div.r > a")!.attributes["href"]!;
-        link = baseUrl + link;
-        titleRes[text] = link;
+
+    String? lastError;
+    for (final url in candidates) {
+      final res = await get(url, cache: false);
+      if (res.error) {
+        lastError = res.errorMessage;
+        continue;
       }
-      var comicsRes = <List<HtComicBrief>>[];
-      for (var block in comicBlocks) {
-        var cs = block.querySelectorAll("div.gallary_wrap > ul.cc > li");
-        var comics = <HtComicBrief>[];
-        for (var c in cs) {
-          var link = c.querySelector("div.pic_box > a")!.attributes["href"]!;
-          var id = RegExp(r"(?<=-aid-)[0-9]+").firstMatch(link)![0]!;
-          var image =
-              c.querySelector("div.pic_box > a > img")!.attributes["src"]!;
-          image = "https:$image";
-          var name = c.querySelector("div.info > div.title > a")!.text;
-          var infoCol = c.querySelector("div.info > div.info_col")!.text;
-          var lr = infoCol.split(",");
-          var time = lr[0];
-          var pagesStr = "";
-          for (int i = 0; i < lr[1].length; i++) {
-            if (lr[1][i].isNum) {
-              pagesStr += lr[1][i];
-            }
-          }
-          var pages = int.parse(pagesStr);
-          try {
-            comics.add(HtComicBrief(name, time, image, id, pages));
-          } finally {}
+
+      try {
+        final document = parse(res.data);
+        final titleMap = <String, String>{};
+        final comicsRes = <List<HtComicBrief>>[];
+
+        final titles = document.querySelectorAll("div.title_sort");
+        for (final titleEl in titles) {
+          var text = titleEl.querySelector("div.title_h2")?.text ?? "";
+          text = text.replaceAll("\n", "").removeAllBlank;
+          if (text.isEmpty) continue;
+
+          final href = titleEl.querySelector("div.r > a")?.attributes["href"] ??
+              titleEl.querySelector("a")?.attributes["href"];
+          final link = href == null ? _absUrl("/albums.html") : _absUrl(href);
+
+          final ul = _findGalleryListForTitle(titleEl);
+          final comics = ul == null ? const <HtComicBrief>[] : _parseComicList(ul.querySelectorAll("li"));
+          if (comics.isEmpty) continue;
+
+          final dedup = _dedupTitle(text, titleMap);
+          titleMap[dedup] = link;
+          comicsRes.add(comics);
         }
-        comicsRes.add(comics);
+
+        if (comicsRes.isNotEmpty) {
+          return Res(HtHomePageData(comicsRes, titleMap));
+        }
+
+        // Fallback: treat as a normal comic list page (some homepages no longer expose multi blocks).
+        var listItems = document.querySelectorAll("div.gallary_wrap > ul.cc > li");
+        listItems = listItems.isNotEmpty ? listItems : document.querySelectorAll("ul.cc > li");
+        final comics = _parseComicList(listItems);
+        if (comics.isNotEmpty) {
+          titleMap["最新"] = _absUrl("/albums.html");
+          return Res(HtHomePageData([comics], titleMap));
+        }
+
+        lastError = "空的内容不能解析哦".tl;
+      } catch (e, s) {
+        LogManager.addLog(LogLevel.error, "Data Analyze", "$e\n$s");
+        lastError = "解析失败: $e";
       }
-      if (comicsRes.length != titleRes.length) {
-        throw Exception("漫画块数量和标题数量不相等");
-      }
-      return Res(HtHomePageData(comicsRes, titleRes));
-    } catch (e, s) {
-      LogManager.addLog(LogLevel.error, "Data Analyze", "$e\n$s");
-      return Res(null, errorMessage: "解析失败: $e");
     }
+
+    return Res(null, errorMessage: lastError ?? "解析失败".tl);
   }
 
   /// 获取给定漫画列表页面的漫画
