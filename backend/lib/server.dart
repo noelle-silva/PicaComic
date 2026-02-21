@@ -211,6 +211,22 @@ class _HttpRes {
   String bodyText() => utf8.decode(body, allowMalformed: true);
 }
 
+class _NoRetry implements Exception {
+  final Object error;
+  const _NoRetry(this.error);
+
+  @override
+  String toString() => error.toString();
+}
+
+String _snippet(String input, {int maxChars = 240}) {
+  var s = input.replaceAll('\r', '').trim();
+  if (s.isEmpty) return '';
+  s = s.replaceAll(RegExp(r'\s+'), ' ');
+  if (s.length > maxChars) s = s.substring(0, maxChars);
+  return s;
+}
+
 Future<_HttpRes> _httpGetBytes(
   Uri uri, {
   Map<String, String>? headers,
@@ -1023,7 +1039,17 @@ Future<_DownloadedComicData> _downloadPicacg(
           maxBytes: 10 * 1024 * 1024,
         );
         final body = res.bodyText();
-        final decoded = jsonDecode(body);
+        Object? decoded;
+        try {
+          decoded = jsonDecode(body);
+        } catch (e) {
+          final head = _snippet(body);
+          throw StateError(
+            head.isEmpty
+                ? 'picacg api returned non-json (${res.statusCode}) @ ${res.uri}: $e'
+                : 'picacg api returned non-json (${res.statusCode}) @ ${res.uri}: $head',
+          );
+        }
         if (decoded is! Map) throw StateError('invalid json');
         final map = Map<String, dynamic>.from(decoded);
         if (res.statusCode == 200) return map;
@@ -1593,38 +1619,94 @@ Future<_DownloadedComicData> _downloadJm(
   }
 
   Future<Map<String, dynamic>> jmGet(String pathQuery) async {
-    final time = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     final uri = pathQuery.startsWith('http')
         ? Uri.parse(pathQuery)
         : Uri.parse('$apiBaseUrl$pathQuery');
-    final res = await _httpGetBytesWithRetry(
-      uri,
-      headers: baseHeaders(time),
-      timeout: const Duration(seconds: 20),
-      retries: 2,
-      maxBytes: 12 * 1024 * 1024,
-    );
-    if (res.statusCode == 401) {
-      final decoded = jsonDecode(res.bodyText());
-      if (decoded is Map) {
-        final msg = (decoded['errorMsg'] ?? 'unauthorized').toString();
-        throw StateError(msg);
+
+    Object? lastErr;
+    const retries = 2;
+    for (var attempt = 0; attempt <= retries; attempt++) {
+      final time = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      try {
+        final res = await _httpGetBytes(
+          uri,
+          headers: baseHeaders(time),
+          timeout: const Duration(seconds: 20),
+          maxBytes: 12 * 1024 * 1024,
+          stopCheck: ctx.stopCheck,
+        );
+
+        if (res.statusCode == 401) {
+          final body = res.bodyText();
+          Object? decoded;
+          try {
+            decoded = jsonDecode(body);
+          } catch (_) {
+            decoded = null;
+          }
+          final msg = decoded is Map
+              ? (decoded['errorMsg'] ?? 'unauthorized').toString().trim()
+              : _snippet(body);
+          throw _NoRetry(
+            StateError(
+              msg.isEmpty ? 'unauthorized @ ${res.uri}' : 'unauthorized @ ${res.uri}: $msg',
+            ),
+          );
+        }
+
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          final err = HttpException('bad status: ${res.statusCode}', uri: uri);
+          if (!_isRetryableStatus(res.statusCode) || attempt == retries) {
+            throw _NoRetry(err);
+          }
+          await Future.delayed(Duration(milliseconds: 300 * (1 << attempt)));
+          continue;
+        }
+
+        final outerBody = res.bodyText();
+        Object? outerAny;
+        try {
+          outerAny = jsonDecode(outerBody);
+        } catch (e) {
+          final head = _snippet(outerBody);
+          throw StateError(
+            head.isEmpty
+                ? 'jm api returned non-json (${res.statusCode}) @ ${res.uri}: $e'
+                : 'jm api returned non-json (${res.statusCode}) @ ${res.uri}: $head',
+          );
+        }
+        if (outerAny is! Map) throw StateError('invalid response');
+        final outer = Map<String, dynamic>.from(outerAny);
+
+        final dataField = outer['data'];
+        if (dataField is List && dataField.isEmpty) {
+          throw StateError('empty data');
+        }
+        if (dataField is! String) {
+          throw StateError('missing data');
+        }
+
+        final decoded = convertData(dataField, '$time$jmSecret');
+        Object? innerAny;
+        try {
+          innerAny = jsonDecode(decoded);
+        } catch (_) {
+          final head = _snippet(decoded);
+          throw StateError(
+            head.isEmpty ? 'invalid data' : 'invalid data: $head',
+          );
+        }
+        if (innerAny is! Map) throw StateError('invalid data');
+        return Map<String, dynamic>.from(innerAny);
+      } catch (e) {
+        if (e is _NoRetry) throw e.error;
+        lastErr = e;
+        if (attempt == retries) break;
+        await Future.delayed(Duration(milliseconds: 300 * (1 << attempt)));
       }
-      throw StateError('unauthorized');
     }
-    final outer = jsonDecode(res.bodyText());
-    if (outer is! Map) throw StateError('invalid response');
-    final dataField = outer['data'];
-    if (dataField is List && dataField.isEmpty) {
-      throw StateError('empty data');
-    }
-    if (dataField is! String) {
-      throw StateError('missing data');
-    }
-    final decoded = convertData(dataField, '$time$jmSecret');
-    final inner = jsonDecode(decoded);
-    if (inner is! Map) throw StateError('invalid data');
-    return Map<String, dynamic>.from(inner);
+
+    throw lastErr ?? Exception('request failed');
   }
 
   int segmentationNum(String epsId, String scrambleID, String pictureName) {
@@ -2438,7 +2520,18 @@ Future<_DownloadedComicData> _downloadNhentai(
     stopCheck: ctx.stopCheck,
   );
 
-  final decoded = jsonDecode(apiRes.bodyText());
+  Object? decoded;
+  final body = apiRes.bodyText();
+  try {
+    decoded = jsonDecode(body);
+  } catch (e) {
+    final head = _snippet(body);
+    throw StateError(
+      head.isEmpty
+          ? 'nhentai api returned non-json (${apiRes.statusCode}) @ ${apiRes.uri}: $e'
+          : 'nhentai api returned non-json (${apiRes.statusCode}) @ ${apiRes.uri}: $head',
+    );
+  }
   if (decoded is! Map) throw StateError('invalid nhentai api response');
   final galleryData = Map<String, dynamic>.from(decoded);
 
