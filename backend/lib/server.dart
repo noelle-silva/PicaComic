@@ -18,7 +18,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-const _picaServerBuild = '2026-02-21.3';
+const _picaServerBuild = '2026-02-21.4';
 
 Future<void> _downloadToFile(
   Uri uri,
@@ -526,18 +526,6 @@ void _recreateDir(Directory dir) {
     }
   }
   dir.createSync(recursive: true);
-}
-
-String _normalizeHttpUrl(String input) {
-  var v = input.trim();
-  if (v.startsWith('//')) return 'https:$v';
-  if (v.startsWith('https:') && !v.startsWith('https://')) {
-    v = v.replaceFirst('https:', 'https://');
-  }
-  if (v.startsWith('http:') && !v.startsWith('http://')) {
-    v = v.replaceFirst('http:', 'http://');
-  }
-  return v;
 }
 
 String _guessExtFromUrl(Uri uri, {String fallback = 'jpg'}) {
@@ -1934,7 +1922,11 @@ Future<_DownloadedComicData> _downloadNhentai(
   Map<String, dynamic> params,
   _TaskCtx ctx,
 ) async {
-  final baseUrl = (auth?['baseUrl'] ?? 'https://nhentai.net').toString().trim();
+  final baseUrl =
+      (auth?['baseUrl'] ?? 'https://nhentai.net').toString().trim().replaceFirst(
+            RegExp(r'/+$'),
+            '',
+          );
   final m = RegExp(r'\d+').firstMatch(target);
   final rawId = (m?.group(0) ?? target).trim();
   if (rawId.isEmpty) throw StateError('invalid target');
@@ -1942,101 +1934,84 @@ Future<_DownloadedComicData> _downloadNhentai(
   final id = 'nhentai$rawId';
   final directory = _safeId(id);
 
+  final cookie = (auth?['cookie'] ?? auth?['cookies'] ?? '').toString().trim();
   final headers = <String, String>{
     'user-agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'referer': '$baseUrl/',
+    'accept': 'application/json, text/plain, */*',
+    'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+    'accept-encoding': 'gzip',
+    if (cookie.isNotEmpty) 'cookie': cookie,
   };
 
-  String combineSpans(dynamic element) {
-    try {
-      final children = (element?.children ?? []) as List;
-      var res = '';
-      for (final c in children) {
-        res += (c.text ?? '').toString();
-      }
-      return res.trim();
-    } catch (_) {
-      return (element?.text ?? '').toString().trim();
+  ctx.setMessage('fetch comic info');
+  final apiRes = await _httpGetBytesWithRetry(
+    Uri.parse('$baseUrl/api/gallery/$rawId'),
+    headers: headers,
+    timeout: const Duration(seconds: 20),
+    retries: 2,
+    maxBytes: 3 * 1024 * 1024,
+  );
+
+  final decoded = jsonDecode(apiRes.bodyText());
+  if (decoded is! Map) throw StateError('invalid nhentai api response');
+  final galleryData = Map<String, dynamic>.from(decoded);
+
+  final mediaId = (galleryData['media_id'] ?? '').toString().trim();
+  if (mediaId.isEmpty) throw StateError('missing media_id');
+
+  final titleObj = galleryData['title'];
+  final title = titleObj is Map
+      ? (titleObj['pretty'] ??
+              titleObj['english'] ??
+              titleObj['japanese'] ??
+              '')
+          .toString()
+          .trim()
+      : '';
+
+  final tags = <String>[];
+  final tagsRaw = galleryData['tags'];
+  if (tagsRaw is List) {
+    for (final t in tagsRaw) {
+      if (t is! Map) continue;
+      final name = (t['name'] ?? '').toString().trim();
+      if (name.isNotEmpty) tags.add(name);
     }
   }
 
-  ctx.setMessage('fetch comic info');
-  final infoRes = await _httpGetBytesWithRetry(
-    Uri.parse('$baseUrl/g/$rawId/'),
-    headers: headers,
-    timeout: const Duration(seconds: 20),
-    retries: 2,
-    maxBytes: 8 * 1024 * 1024,
-  );
-  final doc = html.parse(infoRes.bodyText());
-
-  var cover =
-      (doc.querySelector('div#cover > a > img')?.attributes['data-src'] ?? '')
-          .trim();
-  cover = _normalizeHttpUrl(cover);
-
-  final title = combineSpans(doc.querySelector('h1.title'));
-  final tags = <String>[];
-  for (final span in doc.querySelectorAll('div.tag-container span.name')) {
-    final t = span.text.trim();
-    if (t.isNotEmpty) tags.add(t);
-  }
-
-  ctx.setMessage('fetch images');
-  final page1Res = await _httpGetBytesWithRetry(
-    Uri.parse('$baseUrl/g/$rawId/1/'),
-    headers: headers,
-    timeout: const Duration(seconds: 20),
-    retries: 2,
-    maxBytes: 10 * 1024 * 1024,
-  );
-  final doc1 = html.parse(page1Res.bodyText());
-  final scripts = doc1.querySelectorAll('script');
-  final script0 = scripts
-      .map((e) => e.text)
-      .firstWhere((t) => t.contains('window._n_app'), orElse: () => '');
-  final script1 = scripts
-      .map((e) => e.text)
-      .firstWhere((t) => t.contains('window._gallery'), orElse: () => '');
-  if (script0.isEmpty || script1.isEmpty) {
-    throw StateError('failed to parse nhentai page');
-  }
-
-  Map<String, dynamic> parseJavaScriptJson(String jsCode) {
-    final part = jsCode.split('JSON.parse(\"');
-    if (part.length < 2) throw StateError('missing JSON.parse');
-    final jsonText = part[1].split('\");').first;
-    final decodedJsonText =
-        jsonText.replaceAll('\\u0022', '\"').replaceAll('\\u005C', '\\\\');
-    final decoded = jsonDecode(decodedJsonText);
-    if (decoded is! Map) throw StateError('invalid gallery json');
-    return Map<String, dynamic>.from(decoded);
-  }
-
-  final galleryData = parseJavaScriptJson(script1);
-  final mediaServer = script0.split('image_cdn_urls: [\"')[1].split('\"')[0];
-  final mediaId = (galleryData['media_id'] ?? '').toString();
-  if (mediaId.isEmpty) throw StateError('missing media_id');
-
-  final pages = galleryData['images'] is Map
-      ? (galleryData['images'] as Map)['pages']
-      : null;
+  final images = galleryData['images'];
+  final pages = images is Map ? images['pages'] : null;
   if (pages is! List) throw StateError('missing images.pages');
+
+  String extFromType(String t, {String fallback = 'jpg'}) {
+    return switch (t) {
+      'j' => 'jpg',
+      'p' => 'png',
+      'g' => 'gif',
+      'w' => 'webp',
+      _ => fallback,
+    };
+  }
+
+  String cover = '';
+  try {
+    final coverObj = images is Map ? images['cover'] : null;
+    final t = coverObj is Map ? (coverObj['t'] ?? '').toString() : '';
+    final ext = extFromType(t, fallback: 'jpg');
+    cover = 'https://t.nhentai.net/galleries/$mediaId/cover.$ext';
+  } catch (_) {
+    cover = '';
+  }
 
   final imageUrls = <String>[];
   for (final raw in pages) {
     if (raw is! Map) continue;
     final t = (raw['t'] ?? '').toString();
-    final extension = switch (t) {
-      'j' => 'jpg',
-      'p' => 'png',
-      'g' => 'gif',
-      'w' => 'webp',
-      _ => 'jpg',
-    };
+    final extension = extFromType(t, fallback: 'jpg');
     final n = imageUrls.length + 1;
-    imageUrls.add('https://$mediaServer/galleries/$mediaId/$n.$extension');
+    imageUrls.add('https://i.nhentai.net/galleries/$mediaId/$n.$extension');
   }
 
   final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));

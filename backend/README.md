@@ -92,4 +92,5 @@ dart run bin/server.dart
   - `target`：画廊 id（数字；也可传包含数字的链接）
 - `nhentai`
   - 可选：`baseUrl`（默认 `https://nhentai.net`）
+  - 可选：`cookie`（需要时用于绕过 403/风控，例如 `cf_clearance`）
   - `target`：画廊 id（数字；也可传包含数字的链接）
