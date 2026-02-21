@@ -254,7 +254,7 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
 
   Widget _buildSubtitle(BuildContext context, ServerTask t, String? timeText) {
     final pieces = <String>[];
-    pieces.add(_statusText(t.status));
+    pieces.add(_statusText(t));
     if (t.total > 0) {
       pieces.add('${t.progress}/${t.total}');
     } else if (t.progress > 0) {
@@ -295,10 +295,11 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
     );
   }
 
-  String _statusText(String status) {
+  String _statusText(ServerTask t) {
+    final status = t.status;
     return switch (status) {
       'queued' => "排队中".tl,
-      'running' => "下载中".tl,
+      'running' => t.type == 'upload' ? "上传中".tl : "下载中".tl,
       'paused' => "已暂停".tl,
       'succeeded' => "成功".tl,
       'failed' => "失败".tl,
@@ -367,7 +368,7 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Icon(
-                  _statusBadgeIcon(t.status),
+                  _statusBadgeIcon(t),
                   size: 14,
                   color: Colors.white,
                 ),
@@ -379,10 +380,11 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
     );
   }
 
-  IconData _statusBadgeIcon(String status) {
+  IconData _statusBadgeIcon(ServerTask t) {
+    final status = t.status;
     return switch (status) {
       'queued' => Icons.schedule,
-      'running' => Icons.downloading,
+      'running' => t.type == 'upload' ? Icons.cloud_upload : Icons.downloading,
       'paused' => Icons.pause,
       'succeeded' => Icons.check,
       'failed' => Icons.error_outline,

@@ -637,6 +637,45 @@ class _TaskRunner {
     return id;
   }
 
+  String createUploadTask(Map<String, dynamic> meta) {
+    final target = (meta['id'] ?? '').toString().trim();
+    if (target.isEmpty) throw ArgumentError('missing meta.id');
+    const source = 'local';
+    if (_activeTaskExists(source, target)) {
+      throw StateError('task already exists');
+    }
+
+    final displayTitle =
+        (meta['title'] ?? meta['displayTitle'] ?? '').toString().trim();
+
+    final id = _randomId(18);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      insert into tasks
+      (id, type, source, target, display_title, display_cover, params_json, status, progress, total, message, comic_id, created_at, updated_at)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ''',
+      [
+        id,
+        'upload',
+        source,
+        target,
+        displayTitle.isEmpty ? null : displayTitle,
+        null,
+        jsonEncode(meta),
+        'queued',
+        0,
+        0,
+        null,
+        null,
+        now,
+        now,
+      ],
+    );
+    return id;
+  }
+
   void enqueue(String taskId) {
     if (_running.contains(taskId)) return;
     if (_queue.contains(taskId)) return;
@@ -752,7 +791,7 @@ class _TaskRunner {
   Future<void> _run(String taskId) async {
     final row = db.select(
       '''
-      select source, target, params_json
+      select type, source, target, params_json
       from tasks
       where id = ?
       ''',
@@ -760,6 +799,7 @@ class _TaskRunner {
     ).firstOrNull;
     if (row == null) return;
 
+    final type = (row['type'] as String).trim();
     final source = (row['source'] as String).trim();
     final target = (row['target'] as String).trim();
     final paramsJson = (row['params_json'] as String);
@@ -777,16 +817,30 @@ class _TaskRunner {
     // If paused/canceled before start, do not run.
     if (stopMode(taskId) != null) return;
 
-    final canonicalId = _canonicalComicId(source: source, target: target);
-    if (canonicalId.isNotEmpty && _comicExists(canonicalId)) {
+    if (type == 'download') {
+      final canonicalId = _canonicalComicId(source: source, target: target);
+      if (canonicalId.isNotEmpty && _comicExists(canonicalId)) {
+        final now0 = DateTime.now().millisecondsSinceEpoch;
+        db.execute(
+          '''
+          update tasks
+          set status = 'succeeded', message = 'already downloaded', comic_id = ?, updated_at = ?
+          where id = ?
+          ''',
+          [canonicalId, now0, taskId],
+        );
+        _tryDeleteTaskTemp(taskId);
+        return;
+      }
+    } else if (type != 'upload') {
       final now0 = DateTime.now().millisecondsSinceEpoch;
       db.execute(
         '''
         update tasks
-        set status = 'succeeded', message = 'already downloaded', comic_id = ?, updated_at = ?
+        set status = 'failed', message = ?, updated_at = ?
         where id = ?
         ''',
-        [canonicalId, now0, taskId],
+        ['unknown task type: $type', now0, taskId],
       );
       _tryDeleteTaskTemp(taskId);
       return;
@@ -805,100 +859,226 @@ class _TaskRunner {
     try {
       ctx.throwIfStopped();
 
-      final workDir = taskTempDir(taskId)..createSync(recursive: true);
-      final downloaded = await _downloadBySource(
-        source: source,
-        target: target,
-        params: params,
-        ctx: ctx,
-        workDir: workDir,
-      );
+      if (type == 'download') {
+        final workDir = taskTempDir(taskId)..createSync(recursive: true);
+        final downloaded = await _downloadBySource(
+          source: source,
+          target: target,
+          params: params,
+          ctx: ctx,
+          workDir: workDir,
+        );
 
-      final comicId = downloaded.id;
-      final comicDir = Directory(p.join(storage.path, 'comics', _safeId(comicId)));
+        final comicId = downloaded.id;
+        final comicDir =
+            Directory(p.join(storage.path, 'comics', _safeId(comicId)));
 
-      if (_comicExists(comicId)) {
-        final now1 = DateTime.now().millisecondsSinceEpoch;
+        if (_comicExists(comicId)) {
+          final now1 = DateTime.now().millisecondsSinceEpoch;
+          db.execute(
+            '''
+            update tasks
+            set status = 'succeeded', message = 'already downloaded', comic_id = ?, updated_at = ?
+            where id = ?
+            ''',
+            [comicId, now1, taskId],
+          );
+          _tryDeleteTaskTemp(taskId);
+          return;
+        }
+
+        if (comicDir.existsSync()) {
+          try {
+            comicDir.deleteSync(recursive: true);
+          } catch (_) {
+            // ignore
+          }
+        }
+
+        final committedDir = taskTempDir(taskId);
+        if (committedDir.existsSync()) {
+          committedDir.renameSync(comicDir.path);
+        } else {
+          comicDir.createSync(recursive: true);
+        }
+
+        final pagesDir = Directory(p.join(comicDir.path, 'pages'));
+        final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+
+        String? coverPath;
+        if (coverFile.existsSync()) {
+          coverPath = coverFile.path;
+        } else {
+          final extractedCover = File(p.join(pagesDir.path, 'cover.jpg'));
+          if (extractedCover.existsSync()) coverPath = extractedCover.path;
+        }
+
+        final sizeBytes = _directorySizeBytes(pagesDir);
+
+        final meta = <String, dynamic>{
+          'id': downloaded.id,
+          'title': downloaded.title,
+          'subtitle': downloaded.subtitle,
+          'type': downloaded.type,
+          'tags': downloaded.tags,
+          'directory': downloaded.directory,
+          'json': downloaded.downloadedJson,
+        };
+
+        db.execute(
+          '''
+          insert or replace into comics
+          (id, title, subtitle, type, tags, directory, time, size, meta_json, zip_path, cover_path, zip_sha256)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ''',
+          [
+            downloaded.id,
+            downloaded.title,
+            downloaded.subtitle,
+            downloaded.type,
+            jsonEncode(downloaded.tags),
+            downloaded.directory,
+            DateTime.now().millisecondsSinceEpoch,
+            sizeBytes,
+            jsonEncode(meta),
+            null,
+            coverPath,
+            null,
+          ],
+        );
+
         db.execute(
           '''
           update tasks
-          set status = 'succeeded', message = 'already downloaded', comic_id = ?, updated_at = ?
+          set status = 'succeeded', progress = total, comic_id = ?, updated_at = ?
           where id = ?
           ''',
-          [comicId, now1, taskId],
+          [downloaded.id, DateTime.now().millisecondsSinceEpoch, taskId],
         );
-        _tryDeleteTaskTemp(taskId);
-        return;
-      }
-
-      if (comicDir.existsSync()) {
-        try {
-          comicDir.deleteSync(recursive: true);
-        } catch (_) {
-          // ignore
+      } else {
+        final workDir = taskTempDir(taskId)..createSync(recursive: true);
+        final zipFile = File(p.join(workDir.path, 'comic.zip'));
+        if (!zipFile.existsSync()) {
+          throw StateError('missing uploaded zip');
         }
-      }
 
-      final committedDir = taskTempDir(taskId);
-      if (committedDir.existsSync()) {
-        committedDir.renameSync(comicDir.path);
-      } else {
+        final downloaded = _downloadedFromMeta(params);
+        if (downloaded.id.trim().isEmpty) {
+          throw StateError('missing meta.id');
+        }
+
+        ctx.setTotal(1);
+        ctx.setMessage('extracting');
+
+        final pagesDir = Directory(p.join(workDir.path, 'pages'));
+        if (pagesDir.existsSync()) {
+          try {
+            pagesDir.deleteSync(recursive: true);
+          } catch (_) {
+            // ignore
+          }
+        }
+        pagesDir.createSync(recursive: true);
+
+        InputFileStream? input;
+        try {
+          ctx.throwIfStopped();
+          input = InputFileStream(zipFile.path);
+          final archive = ZipDecoder().decodeBuffer(input);
+          await extractArchiveToDisk(archive, pagesDir.path);
+        } finally {
+          try {
+            input?.close();
+          } catch (_) {
+            // ignore
+          }
+        }
+
+        ctx.throwIfStopped();
+        ctx.setMessage('committing');
+
+        final comicId = downloaded.id;
+        final comicDir =
+            Directory(p.join(storage.path, 'comics', _safeId(comicId)));
+
+        if (comicDir.existsSync()) {
+          try {
+            comicDir.deleteSync(recursive: true);
+          } catch (_) {
+            // ignore
+          }
+        }
         comicDir.createSync(recursive: true);
+
+        final movedPagesDir = Directory(p.join(comicDir.path, 'pages'));
+        pagesDir.renameSync(movedPagesDir.path);
+
+        final coverSrc = File(p.join(workDir.path, 'cover.jpg'));
+        if (coverSrc.existsSync()) {
+          final coverOut = File(p.join(comicDir.path, 'cover.jpg'));
+          try {
+            coverSrc.renameSync(coverOut.path);
+          } catch (_) {
+            // ignore
+          }
+        }
+
+        final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+        String? coverPath;
+        if (coverFile.existsSync()) {
+          coverPath = coverFile.path;
+        } else {
+          final extractedCover = File(p.join(movedPagesDir.path, 'cover.jpg'));
+          if (extractedCover.existsSync()) coverPath = extractedCover.path;
+        }
+
+        final sizeBytes = _directorySizeBytes(movedPagesDir);
+
+        final meta = <String, dynamic>{
+          'id': downloaded.id,
+          'title': downloaded.title,
+          'subtitle': downloaded.subtitle,
+          'type': downloaded.type,
+          'tags': downloaded.tags,
+          'directory': downloaded.directory,
+          'json': downloaded.downloadedJson,
+        };
+
+        db.execute(
+          '''
+          insert or replace into comics
+          (id, title, subtitle, type, tags, directory, time, size, meta_json, zip_path, cover_path, zip_sha256)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ''',
+          [
+            downloaded.id,
+            downloaded.title,
+            downloaded.subtitle,
+            downloaded.type,
+            jsonEncode(downloaded.tags),
+            downloaded.directory,
+            DateTime.now().millisecondsSinceEpoch,
+            sizeBytes,
+            jsonEncode(meta),
+            null,
+            coverPath,
+            null,
+          ],
+        );
+
+        ctx.ensureProgressAtLeast(1);
+
+        db.execute(
+          '''
+          update tasks
+          set status = 'succeeded', progress = total, comic_id = ?, updated_at = ?
+          where id = ?
+          ''',
+          [downloaded.id, DateTime.now().millisecondsSinceEpoch, taskId],
+        );
+
+        _tryDeleteTaskTemp(taskId);
       }
-
-      final pagesDir = Directory(p.join(comicDir.path, 'pages'));
-      final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
-
-      String? coverPath;
-      if (coverFile.existsSync()) {
-        coverPath = coverFile.path;
-      } else {
-        final extractedCover = File(p.join(pagesDir.path, 'cover.jpg'));
-        if (extractedCover.existsSync()) coverPath = extractedCover.path;
-      }
-
-      final sizeBytes = _directorySizeBytes(pagesDir);
-
-      final meta = <String, dynamic>{
-        'id': downloaded.id,
-        'title': downloaded.title,
-        'subtitle': downloaded.subtitle,
-        'type': downloaded.type,
-        'tags': downloaded.tags,
-        'directory': downloaded.directory,
-        'json': downloaded.downloadedJson,
-      };
-
-      db.execute(
-        '''
-        insert or replace into comics
-        (id, title, subtitle, type, tags, directory, time, size, meta_json, zip_path, cover_path, zip_sha256)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''',
-        [
-          downloaded.id,
-          downloaded.title,
-          downloaded.subtitle,
-          downloaded.type,
-          jsonEncode(downloaded.tags),
-          downloaded.directory,
-          DateTime.now().millisecondsSinceEpoch,
-          sizeBytes,
-          jsonEncode(meta),
-          null,
-          coverPath,
-          null,
-        ],
-      );
-
-      db.execute(
-        '''
-        update tasks
-        set status = 'succeeded', progress = total, comic_id = ?, updated_at = ?
-        where id = ?
-        ''',
-        [downloaded.id, DateTime.now().millisecondsSinceEpoch, taskId],
-      );
     } catch (e, st) {
       if (e is _TaskStopped) {
         final now2 = DateTime.now().millisecondsSinceEpoch;
@@ -931,11 +1111,12 @@ class _TaskRunner {
       final trimmedSt =
           stText.length > 1800 ? stText.substring(0, 1800) : stText;
       final headLine = stText.split('\n').firstOrNull?.trim() ?? '';
+      final kind = type == 'upload' ? 'upload' : 'download';
       final msg = debug
-          ? 'download failed: $e\n$trimmedSt'
+          ? '$kind failed: $e\n$trimmedSt'
           : (headLine.isEmpty
-              ? 'download failed: $e'
-              : 'download failed: $e @ $headLine');
+              ? '$kind failed: $e'
+              : '$kind failed: $e @ $headLine');
       db.execute(
         '''
         update tasks
@@ -999,6 +1180,33 @@ class _TaskRunner {
         _downloadNhentai(workDir, readAuth('nhentai'), target, params, ctx),
       _ => throw ArgumentError('unknown source'),
     };
+  }
+
+  _DownloadedComicData _downloadedFromMeta(Map<String, dynamic> meta) {
+    final id = (meta['id'] ?? '').toString();
+    final title = (meta['title'] ?? '').toString();
+    final subtitle = (meta['subtitle'] ?? '').toString();
+    final type = int.tryParse((meta['type'] ?? '').toString()) ?? -1;
+    final directory = (meta['directory'] ?? '').toString();
+
+    final tagsRaw = meta['tags'];
+    final tags = tagsRaw is List
+        ? tagsRaw.map((e) => e.toString()).where((e) => e.isNotEmpty).toList()
+        : const <String>[];
+
+    final jsonRaw = meta['json'];
+    final downloadedJson =
+        jsonRaw is Map ? Map<String, dynamic>.from(jsonRaw) : <String, dynamic>{};
+
+    return _DownloadedComicData(
+      id: id,
+      title: title,
+      subtitle: subtitle,
+      type: type,
+      tags: tags,
+      directory: directory,
+      downloadedJson: downloadedJson,
+    );
   }
 }
 
@@ -3581,6 +3789,56 @@ Handler buildHandler({
       }
       return _json(500, {'ok': false, 'error': 'create task failed: $e'});
     }
+  });
+
+  api.post('/v1/tasks/upload', (Request req) async {
+    final parts = await _readMultipart(req);
+    final metaPart = parts.fields['meta'];
+    final zipPart = parts.files['zip'];
+    if (metaPart == null) {
+      return _json(400, {'ok': false, 'error': 'missing meta'});
+    }
+    if (zipPart == null) {
+      return _json(400, {'ok': false, 'error': 'missing zip'});
+    }
+
+    Map<String, dynamic> meta;
+    try {
+      meta = jsonDecode(metaPart) as Map<String, dynamic>;
+    } catch (_) {
+      return _json(400, {'ok': false, 'error': 'invalid meta json'});
+    }
+
+    final id = (meta['id'] ?? '').toString().trim();
+    if (id.isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing meta.id'});
+    }
+
+    String taskId;
+    try {
+      taskId = taskRunner.createUploadTask(meta);
+    } catch (e) {
+      final msg = e.toString();
+      if (msg.contains('task already exists')) {
+        return _json(409, {'ok': false, 'error': 'task already exists'});
+      }
+      return _json(500, {'ok': false, 'error': 'create task failed: $e'});
+    }
+
+    final workDir = taskRunner.taskTempDir(taskId)..createSync(recursive: true);
+    try {
+      await zipPart.saveTo(p.join(workDir.path, 'comic.zip'));
+      final coverPart = parts.files['cover'];
+      if (coverPart != null) {
+        await coverPart.saveTo(p.join(workDir.path, 'cover.jpg'));
+      }
+    } catch (e) {
+      taskRunner.deleteTask(taskId);
+      return _json(500, {'ok': false, 'error': 'save upload failed: $e'});
+    }
+
+    taskRunner.enqueue(taskId);
+    return _json(200, {'ok': true, 'taskId': taskId});
   });
 
   api.get('/v1/tasks/config', (Request req) {

@@ -318,13 +318,7 @@ class DownloadPage extends StatelessWidget {
       }
     }
     if (targets.isEmpty) return;
-
-    var dialog = showLoadingDialog(
-      App.globalContext!,
-      barrierDismissible: false,
-      allowCancel: false,
-      message: "上传中".tl,
-    );
+    showToast(message: "正在创建上传任务".tl);
 
     int ok = 0;
     int fail = 0;
@@ -338,9 +332,8 @@ class DownloadPage extends StatelessWidget {
       }
     }
 
-    dialog.close();
     showToast(
-      message: "上传完成: @a 成功, @b 失败".tlParams({
+      message: "已创建任务: @a 成功, @b 失败".tlParams({
         "a": ok.toString(),
         "b": fail.toString(),
       }),
@@ -1106,19 +1099,12 @@ class _DownloadedComicInfoViewState extends State<DownloadedComicInfoView> {
                           showToast(message: "未配置服务器".tl);
                           return;
                         }
-                        var dialog = showLoadingDialog(
-                          context,
-                          barrierDismissible: false,
-                          allowCancel: false,
-                          message: "上传中".tl,
-                        );
                         try {
-                          await PicaServer.instance.uploadDownloadedComic(comic);
-                          dialog.close();
-                          showToast(message: "上传完成".tl);
+                          final taskId =
+                              await PicaServer.instance.uploadDownloadedComic(comic);
+                          showToast(message: "${"已创建任务".tl}: $taskId");
                         } catch (e) {
-                          dialog.close();
-                          showToast(message: "${"上传失败".tl}: $e");
+                          showToast(message: "${"创建任务失败".tl}: $e");
                         }
                       },
                       child: Text("上传服务器".tl),

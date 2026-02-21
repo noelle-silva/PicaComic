@@ -1420,19 +1420,12 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                     showToast(message: "未找到本地下载".tl);
                     return;
                   }
-                  var dialog = showLoadingDialog(
-                    App.globalContext!,
-                    barrierDismissible: false,
-                    allowCancel: false,
-                    message: "上传中".tl,
-                  );
                   try {
-                    await PicaServer.instance.uploadDownloadedComic(item);
-                    dialog.close();
-                    showToast(message: "上传完成".tl);
+                    final taskId =
+                        await PicaServer.instance.uploadDownloadedComic(item);
+                    showToast(message: "${"已创建任务".tl}: $taskId");
                   } catch (e) {
-                    dialog.close();
-                    showToast(message: "${"上传失败".tl}: $e");
+                    showToast(message: "${"创建任务失败".tl}: $e");
                   }
                 }),
               if (onLike != null)

@@ -108,7 +108,7 @@ class PicaServer {
     return ServerComic.fromMap(Map<String, dynamic>.from(comic));
   }
 
-  Future<void> uploadDownloadedComic(DownloadedItem item) async {
+  Future<String> uploadDownloadedComic(DownloadedItem item) async {
     final dio = _dio();
     await DownloadManager().init();
 
@@ -123,30 +123,61 @@ class PicaServer {
     if (File(zipPath).existsSync()) {
       File(zipPath).deleteSync();
     }
-    await _zipDirectory(comicDir, zipPath);
+    try {
+      await _zipDirectory(comicDir, zipPath);
 
-    final coverPath = '${comicDir.path}${pathSep}cover.jpg';
-    final coverFile = File(coverPath);
+      final coverPath = '${comicDir.path}${pathSep}cover.jpg';
+      final coverFile = File(coverPath);
 
-    final meta = <String, dynamic>{
-      'id': item.id,
-      'title': item.name,
-      'subtitle': item.subTitle,
-      'type': item.type.index,
-      'tags': item.tags,
-      'directory': directory,
-      'json': item.toJson(),
-    };
+      final meta = <String, dynamic>{
+        'id': item.id,
+        'title': item.name,
+        'subtitle': item.subTitle,
+        'type': item.type.index,
+        'tags': item.tags,
+        'directory': directory,
+        'json': item.toJson(),
+      };
 
-    final form = FormData.fromMap({
-      'meta': jsonEncode(meta),
-      'zip': await MultipartFile.fromFile(zipPath, filename: '${item.id}.zip'),
-      if (coverFile.existsSync())
-        'cover':
-            await MultipartFile.fromFile(coverFile.path, filename: 'cover.jpg'),
-    });
+      final form = FormData.fromMap({
+        'meta': jsonEncode(meta),
+        'zip': await MultipartFile.fromFile(
+          zipPath,
+          filename: '${item.id}.zip',
+        ),
+        if (coverFile.existsSync())
+          'cover': await MultipartFile.fromFile(
+            coverFile.path,
+            filename: 'cover.jpg',
+          ),
+      });
 
-    await dio.post('/api/v1/comics', data: form);
+      final res = await dio.post(
+        '/api/v1/tasks/upload',
+        data: form,
+        options: Options(validateStatus: (_) => true),
+      );
+      final data = res.data;
+      if (data is! Map) throw Exception('invalid response');
+      if (data['ok'] != true) {
+        final err = (data['error'] ?? 'request failed').toString();
+        if (err == 'task already exists') {
+          throw Exception("任务已存在".tl);
+        }
+        throw Exception(err);
+      }
+      final taskId = (data['taskId'] ?? '').toString();
+      if (taskId.isEmpty) throw Exception('missing taskId');
+      return taskId;
+    } finally {
+      try {
+        if (File(zipPath).existsSync()) {
+          File(zipPath).deleteSync();
+        }
+      } catch (_) {
+        // ignore
+      }
+    }
   }
 
   Future<void> putAuthSession(String source, Map<String, dynamic> data) async {

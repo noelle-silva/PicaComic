@@ -50,6 +50,10 @@ dart run bin/server.dart
   - `source`：`picacg | ehentai | jm | hitomi | htmanga | nhentai`
   - `target`：源站目标（不同源含义不同，见下方）
   - `eps`：可选；章节序号数组（从 0 开始，适用于 `picacg/jm`）
+- `POST /api/v1/tasks/upload`：创建“上传本地已下载漫画并入库”任务（异步，multipart）
+  - `meta`：JSON 字符串（包含 `id/title/subtitle/type/tags/directory/json` 等）
+  - `zip`：下载目录打包后的 zip（仅用于传输；服务器会解压为图片并丢弃 zip）
+  - `cover`：可选封面文件
 - `GET /api/v1/tasks?limit=50`：列出任务
 - `GET /api/v1/tasks/{id}`：查询任务状态/进度
 - `GET /api/v1/tasks/config`：查询任务并发配置（`maxConcurrent` / `fileConcurrent`）
