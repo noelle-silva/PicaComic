@@ -59,13 +59,18 @@ class _NormalFavoritePage extends ComicsPage<BaseComic> {
         ComicTileMenuOption(
           "在服务器下载".tl,
           Icons.cloud_download_outlined,
-          (id) {
+          (id, title, coverUrl) {
             if (id == null) return;
             Future.delayed(const Duration(milliseconds: 200), () async {
               if (!PicaServer.instance.enabled) {
                 showToast(message: "未配置服务器".tl);
                 return;
               }
+              final safeCover = (coverUrl ?? '').trim();
+              final cover = safeCover.startsWith('http://') ||
+                      safeCover.startsWith('https://')
+                  ? safeCover
+                  : null;
               final dialog = showLoadingDialog(
                 App.globalContext!,
                 barrierDismissible: false,
@@ -74,7 +79,12 @@ class _NormalFavoritePage extends ComicsPage<BaseComic> {
               );
               try {
                 final taskId = await PicaServer.instance
-                    .createDownloadTask(source: serverSource, target: id);
+                    .createDownloadTask(
+                  source: serverSource,
+                  target: id,
+                  title: title,
+                  coverUrl: cover,
+                );
                 dialog.close();
                 showToast(message: "${"已创建任务".tl}: $taskId");
               } catch (e) {
@@ -88,7 +98,7 @@ class _NormalFavoritePage extends ComicsPage<BaseComic> {
         ComicTileMenuOption(
           "取消收藏".tl,
           Icons.playlist_remove_outlined,
-          (id) {
+          (id, _, __) {
             if (id == null) return;
             var dialog = showLoadingDialog(App.globalContext!);
             data.addOrDelFavorite!(id, "0", false).then((res) {

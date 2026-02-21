@@ -166,12 +166,17 @@ class PicaServer {
     required String source,
     required String target,
     List<int>? eps,
+    String? title,
+    String? coverUrl,
   }) async {
     final dio = _dio();
     final payload = <String, dynamic>{
       'source': source,
       'target': target,
       if (eps != null) 'eps': eps,
+      if (title != null && title.trim().isNotEmpty) 'title': title.trim(),
+      if (coverUrl != null && coverUrl.trim().isNotEmpty)
+        'coverUrl': coverUrl.trim(),
     };
     final res = await dio.post(
       '/api/v1/tasks/download',
@@ -677,6 +682,8 @@ class ServerTask {
   final String type;
   final String source;
   final String target;
+  final String? title;
+  final String? coverUrl;
   final String status;
   final int progress;
   final int total;
@@ -691,6 +698,8 @@ class ServerTask {
     required this.type,
     required this.source,
     required this.target,
+    this.title,
+    this.coverUrl,
     required this.status,
     required this.progress,
     required this.total,
@@ -707,6 +716,8 @@ class ServerTask {
       type: (map['type'] ?? '').toString(),
       source: (map['source'] ?? '').toString(),
       target: (map['target'] ?? '').toString(),
+      title: map['title']?.toString(),
+      coverUrl: map['coverUrl']?.toString(),
       status: (map['status'] ?? '').toString(),
       progress: int.tryParse((map['progress'] ?? '').toString()) ?? 0,
       total: int.tryParse((map['total'] ?? '').toString()) ?? 0,
@@ -723,6 +734,8 @@ class ServerTask {
         'type': type,
         'source': source,
         'target': target,
+        'title': title,
+        'coverUrl': coverUrl,
         'status': status,
         'progress': progress,
         'total': total,

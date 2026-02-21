@@ -471,9 +471,9 @@ class _ServerFavoriteTile extends ComicTile {
   @override
   List<ComicTileMenuOption>? get addonMenuOptions => [
         ComicTileMenuOption(
-            "移动到收藏夹".tl, Icons.drive_file_move_outline, (_) => onMove()),
+            "移动到收藏夹".tl, Icons.drive_file_move_outline, (_, __, ___) => onMove()),
         ComicTileMenuOption(
-            "从服务器收藏删除".tl, Icons.delete_outline, (_) => onDelete()),
+            "从服务器收藏删除".tl, Icons.delete_outline, (_, __, ___) => onDelete()),
       ];
 
   @override

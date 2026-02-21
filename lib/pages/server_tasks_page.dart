@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:pica_comic/components/components.dart';
+import 'package:pica_comic/foundation/image_loader/stream_image_provider.dart';
+import 'package:pica_comic/foundation/image_manager.dart';
 import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/pages/server_library_page.dart';
 import 'package:pica_comic/tools/time.dart';
@@ -23,6 +25,8 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
   Timer? _timer;
   bool _requestInFlight = false;
   int? _maxConcurrent;
+  bool _selectMode = false;
+  final Set<String> _selectedTaskIds = {};
 
   @override
   void initState() {
@@ -67,6 +71,10 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
       if (!mounted) return;
       setState(() {
         tasks = list;
+        if (_selectMode) {
+          final existing = list.map((e) => e.id).toSet();
+          _selectedTaskIds.removeWhere((e) => !existing.contains(e));
+        }
         loading = false;
         error = null;
       });
@@ -98,20 +106,50 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
 
   @override
   Widget build(BuildContext context) {
+    final selectedCount = _selectedTaskIds.length;
     return Scaffold(
       appBar: AppBar(
-        title: Text("服务器任务".tl),
+        title: Text(
+          _selectMode ? "${"已选择".tl} $selectedCount" : "服务器任务".tl,
+        ),
         actions: [
-          IconButton(
-            tooltip: "并发".tl,
-            onPressed: _openConcurrencyDialog,
-            icon: const Icon(Icons.tune),
-          ),
-          IconButton(
-            tooltip: "刷新".tl,
-            onPressed: _load,
-            icon: const Icon(Icons.refresh),
-          ),
+          if (_selectMode) ...[
+            IconButton(
+              tooltip: "删除".tl,
+              onPressed: selectedCount == 0
+                  ? null
+                  : () {
+                      showConfirmDialog(
+                        context,
+                        "删除".tl,
+                        "${"删除选中任务记录".tl}?",
+                        () => unawaited(_deleteSelectedTasks()),
+                      );
+                    },
+              icon: const Icon(Icons.delete_outline),
+            ),
+            IconButton(
+              tooltip: "退出多选".tl,
+              onPressed: _exitSelectMode,
+              icon: const Icon(Icons.close),
+            ),
+          ] else ...[
+            IconButton(
+              tooltip: "多选".tl,
+              onPressed: _enterSelectMode,
+              icon: const Icon(Icons.checklist),
+            ),
+            IconButton(
+              tooltip: "并发".tl,
+              onPressed: _openConcurrencyDialog,
+              icon: const Icon(Icons.tune),
+            ),
+            IconButton(
+              tooltip: "刷新".tl,
+              onPressed: _load,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
         ],
       ),
       body: loading
@@ -164,33 +202,57 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
       itemBuilder: (context, index) {
         final t = tasks[index];
         final trailing = _formatTimeMs(t.updatedAt ?? t.createdAt);
-        final subtitle = _buildSubtitle(t);
         return ListTile(
-          leading: _statusIcon(context, t.status),
+          leading: _buildLeading(context, t),
           title: Text(
-            '${t.source}: ${t.target}',
+            _buildTitleText(t),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          subtitle: subtitle,
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (trailing != null) Text(trailing),
-              PopupMenuButton<_TaskAction>(
-                tooltip: "更多".tl,
-                onSelected: (a) => _onAction(t, a),
-                itemBuilder: (_) => _buildActions(t),
-              ),
-            ],
-          ),
-          onTap: () => _openTaskDetail(t.id),
+          subtitle: _buildSubtitle(context, t, trailing),
+          trailing: _selectMode
+              ? Checkbox(
+                  value: _selectedTaskIds.contains(t.id),
+                  onChanged: (_) => _toggleSelected(t.id),
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (trailing != null) Text(trailing),
+                    PopupMenuButton<_TaskAction>(
+                      tooltip: "更多".tl,
+                      onSelected: (a) => _onAction(t, a),
+                      itemBuilder: (_) => _buildActions(t),
+                    ),
+                  ],
+                ),
+          onTap: () {
+            if (_selectMode) {
+              _toggleSelected(t.id);
+            } else {
+              _openTaskDetail(t.id);
+            }
+          },
+          onLongPress: () {
+            if (_selectMode) {
+              _toggleSelected(t.id);
+            } else {
+              _enterSelectMode();
+              _toggleSelected(t.id);
+            }
+          },
         );
       },
     );
   }
 
-  Widget _buildSubtitle(ServerTask t) {
+  String _buildTitleText(ServerTask t) {
+    final title = (t.title ?? '').trim();
+    if (title.isNotEmpty) return title;
+    return '${t.source}: ${t.target}';
+  }
+
+  Widget _buildSubtitle(BuildContext context, ServerTask t, String? timeText) {
     final pieces = <String>[];
     pieces.add(_statusText(t.status));
     if (t.total > 0) {
@@ -200,10 +262,36 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
     }
     final msg = (t.message ?? '').trim();
     if (msg.isNotEmpty) pieces.add(msg);
-    return Text(
-      pieces.join(' · '),
-      maxLines: 2,
-      overflow: TextOverflow.ellipsis,
+    if (timeText != null && _selectMode) pieces.add(timeText);
+
+    final title = (t.title ?? '').trim();
+    final showSourceTarget = title.isNotEmpty;
+
+    if (!showSourceTarget) {
+      return Text(
+        pieces.join(' · '),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      );
+    }
+
+    final secondary = '${t.source}: ${t.target}';
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          secondary,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        Text(
+          pieces.join(' · '),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
     );
   }
 
@@ -240,6 +328,67 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
       default:
         return const Icon(Icons.help_outline);
     }
+  }
+
+  Widget _buildLeading(BuildContext context, ServerTask t) {
+    final url = (t.coverUrl ?? '').trim();
+    final hasUrl = url.startsWith('http://') || url.startsWith('https://');
+    if (!hasUrl) return _statusIcon(context, t.status);
+
+    final headers =
+        url.contains('/api/v1/') ? PicaServer.instance.imageHeaders() : null;
+
+    return SizedBox.square(
+      dimension: 44,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Image(
+              fit: BoxFit.cover,
+              filterQuality: FilterQuality.medium,
+              image: StreamImageProvider(
+                () => ImageManager().getImage(url, headers),
+                url,
+              ),
+              errorBuilder: (_, __, ___) => const ColoredBox(
+                color: Colors.black12,
+                child: Center(child: Icon(Icons.photo, size: 22)),
+              ),
+            ),
+            Positioned(
+              right: 2,
+              bottom: 2,
+              child: Container(
+                padding: const EdgeInsets.all(2),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Icon(
+                  _statusBadgeIcon(t.status),
+                  size: 14,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _statusBadgeIcon(String status) {
+    return switch (status) {
+      'queued' => Icons.schedule,
+      'running' => Icons.downloading,
+      'paused' => Icons.pause,
+      'succeeded' => Icons.check,
+      'failed' => Icons.error_outline,
+      'canceled' => Icons.cancel_outlined,
+      _ => Icons.help_outline,
+    };
   }
 
   String? _formatTimeMs(int? ms) {
@@ -294,6 +443,9 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
         items.add(_TaskAction.delete);
         break;
       case 'canceled':
+        items.add(_TaskAction.retry);
+        items.add(_TaskAction.delete);
+        break;
       case 'succeeded':
         items.add(_TaskAction.delete);
         break;
@@ -362,6 +514,67 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
         );
         break;
     }
+  }
+
+  void _enterSelectMode() {
+    if (_selectMode) return;
+    setState(() {
+      _selectMode = true;
+      _selectedTaskIds.clear();
+    });
+  }
+
+  void _exitSelectMode() {
+    if (!_selectMode) return;
+    setState(() {
+      _selectMode = false;
+      _selectedTaskIds.clear();
+    });
+  }
+
+  void _toggleSelected(String id) {
+    if (id.trim().isEmpty) return;
+    setState(() {
+      if (_selectedTaskIds.contains(id)) {
+        _selectedTaskIds.remove(id);
+      } else {
+        _selectedTaskIds.add(id);
+      }
+    });
+  }
+
+  Future<void> _deleteSelectedTasks() async {
+    if (!PicaServer.instance.enabled) {
+      showToast(message: "未配置服务器".tl);
+      return;
+    }
+    final ids = _selectedTaskIds.toList();
+    if (ids.isEmpty) return;
+
+    final dialog = showLoadingDialog(
+      context,
+      barrierDismissible: false,
+      allowCancel: false,
+      message: "删除中".tl,
+    );
+    var ok = 0;
+    var failed = 0;
+    for (final id in ids) {
+      try {
+        await PicaServer.instance.deleteTask(id);
+        ok++;
+      } catch (_) {
+        failed++;
+      }
+    }
+    dialog.close();
+    if (!mounted) return;
+    _exitSelectMode();
+    await _load(silent: true);
+    final msg = failed == 0
+        ? "${"已删除".tl} $ok"
+        : "${"已删除".tl} $ok, ${"失败".tl} $failed";
+    showToast(message: msg);
   }
 
   Future<void> _openConcurrencyDialog() async {

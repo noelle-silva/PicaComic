@@ -533,6 +533,7 @@ class LocalFavoriteTile extends ComicTile {
                 final taskId = await PicaServer.instance.createDownloadTask(
                   source: toServerSource()!,
                   target: comic.target,
+                  title: title,
                 );
                 showToast(message: "${"已创建任务".tl}: $taskId");
               } catch (e) {
@@ -659,7 +660,10 @@ class LocalFavoriteTile extends ComicTile {
                           try {
                             final taskId = await PicaServer.instance
                                 .createDownloadTask(
-                                    source: serverSource, target: comic.target);
+                              source: serverSource,
+                              target: comic.target,
+                              title: title,
+                            );
                             dialog.close();
                             showToast(message: "${"已创建任务".tl}: $taskId");
                           } catch (e) {

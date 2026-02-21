@@ -3,7 +3,7 @@ part of 'components.dart';
 class ComicTileMenuOption {
   final String title;
   final IconData icon;
-  final void Function(String? comicId) onTap;
+  final void Function(String? comicId, String? title, String? coverUrl) onTap;
 
   const ComicTileMenuOption(this.title, this.icon, this.onTap);
 }
@@ -40,6 +40,9 @@ abstract class ComicTile extends StatelessWidget {
 
   /// Comic ID, used to identify a comic.
   String? get comicID => null;
+
+  /// Comic cover url/path if available.
+  String? get coverUrl => null;
 
   bool get showFavorite => true;
 
@@ -124,7 +127,7 @@ abstract class ComicTile extends StatelessWidget {
                         ListTile(
                           leading: Icon(option.icon),
                           title: Text(option.title),
-                          onTap: () => option.onTap(comicID),
+                          onTap: () => option.onTap(comicID, title, coverUrl),
                         ),
                     const SizedBox(
                       height: 16,
@@ -225,7 +228,7 @@ abstract class ComicTile extends StatelessWidget {
         for (var option in addonMenuOptions!)
           DesktopMenuEntry(
             text: option.title,
-            onClick: () => option.onTap(comicID),
+            onClick: () => option.onTap(comicID, title, coverUrl),
           ),
     ]);
   }
@@ -665,6 +668,9 @@ class NormalComicTile extends ComicTile {
 
   @override
   String get title => name;
+
+  @override
+  String? get coverUrl => coverPath;
 }
 
 class ComicTilePlaceholder extends StatelessWidget {
@@ -795,6 +801,9 @@ class CustomComicTile extends ComicTile {
 
   @override
   String get title => comic.title;
+
+  @override
+  String? get coverUrl => comic.cover;
 
   @override
   FavoriteItem? get favoriteItem => FavoriteItem.custom(comic);

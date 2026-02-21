@@ -593,6 +593,13 @@ class _TaskRunner {
     if (source.isEmpty) throw ArgumentError('missing source');
     if (target.isEmpty) throw ArgumentError('missing target');
 
+    final displayTitle =
+        (params['title'] ?? params['displayTitle'] ?? '').toString().trim();
+    final displayCover =
+        (params['coverUrl'] ?? params['cover'] ?? params['displayCover'] ?? '')
+            .toString()
+            .trim();
+
     final canonicalId = _canonicalComicId(source: source, target: target);
     if (canonicalId.isNotEmpty && _comicExists(canonicalId)) {
       throw StateError('already downloaded');
@@ -606,14 +613,16 @@ class _TaskRunner {
     db.execute(
       '''
       insert into tasks
-      (id, type, source, target, params_json, status, progress, total, message, comic_id, created_at, updated_at)
-      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, type, source, target, display_title, display_cover, params_json, status, progress, total, message, comic_id, created_at, updated_at)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ''',
       [
         id,
         'download',
         source,
         target,
+        displayTitle.isEmpty ? null : displayTitle,
+        displayCover.isEmpty ? null : displayCover,
         jsonEncode(params),
         'queued',
         0,
@@ -3651,11 +3660,19 @@ Handler buildHandler({
   api.get('/v1/tasks', (Request req) {
     final limit = int.tryParse(req.url.queryParameters['limit'] ?? '50') ?? 50;
     final n = limit.clamp(1, 200).toInt();
+    final base = _baseUrl(req);
     final rows = db.select(
       '''
-      select id, type, source, target, status, progress, total, message, comic_id, created_at, updated_at
-      from tasks
-      order by created_at desc
+      select
+        t.id, t.type, t.source, t.target,
+        t.display_title, t.display_cover,
+        t.status, t.progress, t.total, t.message,
+        t.comic_id, t.created_at, t.updated_at,
+        c.title as comic_title,
+        case when c.cover_path is not null then 1 else 0 end as has_cover
+      from tasks t
+      left join comics c on c.id = t.comic_id
+      order by t.created_at desc
       limit ?
       ''',
       [n],
@@ -3668,6 +3685,17 @@ Handler buildHandler({
                 'type': r['type'],
                 'source': r['source'],
                 'target': r['target'],
+                'title': ((r['comic_title'] ?? r['display_title']) ?? '')
+                    .toString(),
+                'coverUrl': (() {
+                  final comicId = (r['comic_id'] ?? '').toString().trim();
+                  final hasCover = (r['has_cover'] as int?) == 1;
+                  if (comicId.isNotEmpty && hasCover) {
+                    return '$base/api/v1/comics/${Uri.encodeComponent(comicId)}/cover';
+                  }
+                  final v = (r['display_cover'] ?? '').toString().trim();
+                  return v.isEmpty ? null : v;
+                })(),
                 'status': r['status'],
                 'progress': r['progress'],
                 'total': r['total'],
@@ -3681,11 +3709,19 @@ Handler buildHandler({
   });
 
   api.get('/v1/tasks/<id>', (Request req, String id) {
+    final base = _baseUrl(req);
     final row = db.select(
       '''
-      select id, type, source, target, params_json, status, progress, total, message, comic_id, created_at, updated_at
-      from tasks
-      where id = ?
+      select
+        t.id, t.type, t.source, t.target,
+        t.display_title, t.display_cover,
+        t.params_json, t.status, t.progress, t.total, t.message,
+        t.comic_id, t.created_at, t.updated_at,
+        c.title as comic_title,
+        case when c.cover_path is not null then 1 else 0 end as has_cover
+      from tasks t
+      left join comics c on c.id = t.comic_id
+      where t.id = ?
       ''',
       [id],
     ).firstOrNull;
@@ -3703,6 +3739,17 @@ Handler buildHandler({
         'type': row['type'],
         'source': row['source'],
         'target': row['target'],
+        'title': ((row['comic_title'] ?? row['display_title']) ?? '')
+            .toString(),
+        'coverUrl': (() {
+          final comicId = (row['comic_id'] ?? '').toString().trim();
+          final hasCover = (row['has_cover'] as int?) == 1;
+          if (comicId.isNotEmpty && hasCover) {
+            return '$base/api/v1/comics/${Uri.encodeComponent(comicId)}/cover';
+          }
+          final v = (row['display_cover'] ?? '').toString().trim();
+          return v.isEmpty ? null : v;
+        })(),
         'params': params,
         'status': row['status'],
         'progress': row['progress'],
@@ -4311,6 +4358,8 @@ void _initDb(Database db) {
       type text not null,
       source text not null,
       target text not null,
+      display_title text,
+      display_cover text,
       params_json text not null,
       status text not null,
       progress int not null,
@@ -4321,6 +4370,18 @@ void _initDb(Database db) {
       updated_at int not null
     );
   ''');
+
+  // Backward-compatible schema upgrades.
+  try {
+    db.execute('alter table tasks add column display_title text;');
+  } catch (_) {
+    // ignore
+  }
+  try {
+    db.execute('alter table tasks add column display_cover text;');
+  } catch (_) {
+    // ignore
+  }
 
   db.execute('''
     create table if not exists favorite_folders (

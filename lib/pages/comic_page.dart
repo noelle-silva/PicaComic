@@ -1386,9 +1386,18 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                         message: "创建任务中".tl,
                       );
                       try {
+                        final safeCover = (cover ?? '').trim();
+                        final coverUrl = safeCover.startsWith('http://') ||
+                                safeCover.startsWith('https://')
+                            ? safeCover
+                            : null;
                         final taskId = await PicaServer.instance
                             .createDownloadTask(
-                                source: serverSource, target: id);
+                          source: serverSource,
+                          target: id,
+                          title: title,
+                          coverUrl: coverUrl,
+                        );
                         dialog.close();
                         showToast(message: "${"已创建任务".tl}: $taskId");
                       } catch (e) {
