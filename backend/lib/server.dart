@@ -18,6 +18,8 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import 'package:sqlite3/sqlite3.dart';
 
+const _picaServerBuild = '2026-02-21.3';
+
 Future<void> _downloadToFile(
   Uri uri,
   File outFile, {
@@ -439,14 +441,24 @@ class _TaskRunner {
         ''',
         [downloaded.id, DateTime.now().millisecondsSinceEpoch, taskId],
       );
-    } catch (e) {
+    } catch (e, st) {
+      final debug = Platform.environment['PICA_TASK_DEBUG'] == '1';
+      final stText = st.toString();
+      final trimmedSt =
+          stText.length > 1800 ? stText.substring(0, 1800) : stText;
+      final headLine = stText.split('\n').firstOrNull?.trim() ?? '';
+      final msg = debug
+          ? 'download failed: $e\n$trimmedSt'
+          : (headLine.isEmpty
+              ? 'download failed: $e'
+              : 'download failed: $e @ $headLine');
       db.execute(
         '''
         update tasks
         set status = 'failed', message = ?, updated_at = ?
         where id = ?
         ''',
-        ['download failed: $e', DateTime.now().millisecondsSinceEpoch, taskId],
+        [msg, DateTime.now().millisecondsSinceEpoch, taskId],
       );
     }
   }
@@ -1093,12 +1105,15 @@ Future<_DownloadedComicData> _downloadJm(
   const jmSecret = '185Hcomic3PAPP7R';
   const ua =
       'Mozilla/5.0 (Linux; Android 10; K; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/138.0.0.0 Mobile Safari/537.36';
+  const imgUa = 'Dalvik/2.1.0 (Linux; Android 10; K)';
 
   Map<String, String> baseHeaders(int time, {bool post = false}) {
     final token = md5.convert(utf8.encode('$time$jmAuthKey')).toString();
     return {
       'accept': '*/*',
-      'accept-encoding': 'gzip, deflate, br, zstd',
+      // Dart HttpClient does not support brotli/zstd auto-decompression.
+      // Advertising them may yield compressed bodies that can't be parsed.
+      'accept-encoding': 'gzip',
       'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
       'connection': 'keep-alive',
       'origin': 'https://localhost',
@@ -1119,20 +1134,30 @@ Future<_DownloadedComicData> _downloadJm(
   String convertData(String input, String secret) {
     final key = md5.convert(utf8.encode(secret)).toString();
     final data = base64Decode(input);
+    if (data.isEmpty) return '';
+    String stripTail(String s) {
+      var i = s.length - 1;
+      for (; i >= 0; i--) {
+        final ch = s[i];
+        if (ch == '}' || ch == ']') break;
+      }
+      return s.substring(0, i + 1);
+    }
+    if (data.length % 16 != 0) {
+      return stripTail(utf8.decode(data, allowMalformed: true));
+    }
     final cipher = ECBBlockCipher(AESEngine())
       ..init(false, KeyParameter(utf8.encode(key)));
     var offset = 0;
     final out = Uint8List(data.length);
-    while (offset < data.length) {
-      offset += cipher.processBlock(data, offset, out, offset);
+    try {
+      while (offset < data.length) {
+        offset += cipher.processBlock(data, offset, out, offset);
+      }
+      return stripTail(utf8.decode(out, allowMalformed: true));
+    } on RangeError {
+      return stripTail(utf8.decode(data, allowMalformed: true));
     }
-    final res = utf8.decode(out, allowMalformed: true);
-    var i = res.length - 1;
-    for (; i >= 0; i--) {
-      final ch = res[i];
-      if (ch == '}' || ch == ']') break;
-    }
-    return res.substring(0, i + 1);
   }
 
   Future<Map<String, dynamic>> jmGet(String pathQuery) async {
@@ -1399,10 +1424,14 @@ Future<_DownloadedComicData> _downloadJm(
       final bytesRes = await _httpGetBytesWithRetry(
         uri,
         headers: {
-          'user-agent': ua,
+          'user-agent': imgUa,
           'referer': 'https://localhost/',
           'accept':
               'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          // Same as api: don't advertise brotli/zstd to Dart HttpClient.
+          'accept-encoding': 'gzip',
+          'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+          'x-requested-with': 'com.example.app',
         },
         timeout: const Duration(minutes: 2),
         retries: 2,
@@ -1412,7 +1441,28 @@ Future<_DownloadedComicData> _downloadJm(
       Uint8List outBytes = bytesRes.body;
       String outExt = ext;
       if (ext != 'gif') {
-        outBytes = recombineJm(outBytes, chapterId, pictureName);
+        final debug = Platform.environment['PICA_TASK_DEBUG'] == '1';
+        final ct = (bytesRes.contentType ?? '').toLowerCase();
+        if (ct.isNotEmpty && !ct.startsWith('image/')) {
+          final preview = debug
+              ? '\n${utf8.decode(outBytes.take(300).toList(), allowMalformed: true)}'
+              : '';
+          throw StateError('jm image not image: $ct ($uri)$preview');
+        }
+        try {
+          outBytes = recombineJm(outBytes, chapterId, pictureName);
+        } catch (e) {
+          final hex = outBytes.isEmpty
+              ? ''
+              : outBytes
+                  .take(16)
+                  .map((b) => b.toRadixString(16).padLeft(2, '0'))
+                  .join(' ');
+          final preview = debug
+              ? '\ncontent-type: ${bytesRes.contentType}\nlen: ${outBytes.length}\nhex: $hex'
+              : '';
+          throw StateError('jm recombine failed: $e ($uri)$preview');
+        }
         outExt = 'jpg';
       }
 
@@ -1709,7 +1759,8 @@ Future<_DownloadedComicData> _downloadHtmanga(
   Map<String, dynamic> params,
   _TaskCtx ctx,
 ) async {
-  final baseUrl = (auth?['baseUrl'] ?? '').toString().trim();
+  final baseUrlRaw = (auth?['baseUrl'] ?? '').toString().trim();
+  final baseUrl = baseUrlRaw.replaceFirst(RegExp(r'/+$'), '');
   if (baseUrl.isEmpty) {
     throw StateError('missing auth.baseUrl');
   }
@@ -1728,6 +1779,18 @@ Future<_DownloadedComicData> _downloadHtmanga(
     if (cookie.isNotEmpty) 'cookie': cookie,
   };
 
+  String normalizeUrl(String input) {
+    var v = input.trim();
+    if (v.isEmpty) return '';
+    if (v.startsWith('http://') || v.startsWith('https://')) return v;
+    if (v.startsWith('//')) {
+      v = v.replaceFirst(RegExp(r'^/+'), '');
+      return 'https://$v';
+    }
+    if (v.startsWith('/')) return '$baseUrl$v';
+    return '$baseUrl/$v';
+  }
+
   ctx.setMessage('fetch comic info');
   final infoUrl = Uri.parse('$baseUrl/photos-index-page-1-aid-$rawId.html');
   final infoRes = await _httpGetBytesWithRetry(
@@ -1743,7 +1806,7 @@ Future<_DownloadedComicData> _downloadHtmanga(
   final coverSrc = doc
       .querySelector('div.userwrap > div.asTB > div.asTBcell.uwthumb > img')
       ?.attributes['src'];
-  final coverUrl = coverSrc == null ? '' : _normalizeHttpUrl(coverSrc);
+  final coverUrl = coverSrc == null ? '' : normalizeUrl(coverSrc);
 
   final labels = doc.querySelectorAll('div.asTBcell.uwconn > label');
   final category =
@@ -1770,10 +1833,7 @@ Future<_DownloadedComicData> _downloadHtmanga(
       (doc.querySelector('div.asTBcell.uwuinfo > a > img')?.attributes['src'] ??
               '')
           .trim();
-  if (avatar.isNotEmpty && !avatar.startsWith('http')) {
-    avatar = '$baseUrl/$avatar';
-  }
-  avatar = _normalizeHttpUrl(avatar);
+  avatar = normalizeUrl(avatar);
 
   final uploadNumText =
       (doc.querySelector('div.asTBcell.uwuinfo > p > font')?.text ?? '0');
@@ -1794,7 +1854,11 @@ Future<_DownloadedComicData> _downloadHtmanga(
   for (final m in matches) {
     final u = m.group(0);
     if (u == null || u.trim().isEmpty) continue;
-    imageUrls.add('https://$u');
+    final cleaned = u.trim().replaceFirst(RegExp(r'^/+'), '');
+    final lower = cleaned.toLowerCase();
+    if (!(lower.contains('/data/') || lower.contains('wnimg'))) continue;
+    if (lower.endsWith('.js') || lower.endsWith('.css')) continue;
+    imageUrls.add('https://$cleaned');
   }
 
   final comicDir = Directory(p.join(storage.path, 'comics', _safeId(id)));
@@ -2275,6 +2339,7 @@ Handler buildHandler({
       jsonEncode({
         'ok': true,
         'time': DateTime.now().toIso8601String(),
+        'build': _picaServerBuild,
       }),
       headers: {'content-type': 'application/json; charset=utf-8'},
     );
