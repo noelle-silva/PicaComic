@@ -36,10 +36,10 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
     _timer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (!mounted) return;
       if (loading) return;
-      final hasActive = tasks.any((t) => t.status == 'queued' || t.status == 'running');
-      if (hasActive) {
-        _load(silent: true);
-      }
+      if (!PicaServer.instance.enabled) return;
+      final route = ModalRoute.of(context);
+      if (route != null && !route.isCurrent) return;
+      _load(silent: true);
     });
   }
 
@@ -300,6 +300,7 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
     return switch (status) {
       'queued' => "排队中".tl,
       'running' => t.type == 'upload' ? "上传中".tl : "下载中".tl,
+      'uploading' => "上传中".tl,
       'paused' => "已暂停".tl,
       'succeeded' => "成功".tl,
       'failed' => "失败".tl,
@@ -314,6 +315,7 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
       case 'queued':
         return const Icon(Icons.schedule);
       case 'running':
+      case 'uploading':
         return const SizedBox.square(
           dimension: 24,
           child: CircularProgressIndicator(strokeWidth: 2),
@@ -385,6 +387,7 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
     return switch (status) {
       'queued' => Icons.schedule,
       'running' => t.type == 'upload' ? Icons.cloud_upload : Icons.downloading,
+      'uploading' => Icons.cloud_upload,
       'paused' => Icons.pause,
       'succeeded' => Icons.check,
       'failed' => Icons.error_outline,
@@ -430,6 +433,9 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
   List<PopupMenuEntry<_TaskAction>> _buildActions(ServerTask t) {
     final items = <_TaskAction>[];
     switch (t.status) {
+      case 'uploading':
+        items.add(_TaskAction.cancel);
+        break;
       case 'running':
       case 'queued':
         items.add(_TaskAction.pause);

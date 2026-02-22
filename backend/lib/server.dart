@@ -562,7 +562,7 @@ class _TaskRunner {
       '''
       update tasks
       set status = 'failed', message = 'server restarted', updated_at = ?
-      where status = 'running'
+      where status in ('running','uploading')
       ''',
       [now],
     );
@@ -579,7 +579,7 @@ class _TaskRunner {
       '''
       select id from tasks
       where source = ? and target = ?
-        and status in ('queued','running','paused')
+        and status in ('queued','running','paused','uploading')
       limit 1
       ''',
       [source, target],
@@ -637,7 +637,10 @@ class _TaskRunner {
     return id;
   }
 
-  String createUploadTask(Map<String, dynamic> meta) {
+  String createUploadTask(
+    Map<String, dynamic> meta, {
+    String initialStatus = 'queued',
+  }) {
     final target = (meta['id'] ?? '').toString().trim();
     if (target.isEmpty) throw ArgumentError('missing meta.id');
     const source = 'local';
@@ -664,7 +667,7 @@ class _TaskRunner {
         displayTitle.isEmpty ? null : displayTitle,
         null,
         jsonEncode(meta),
-        'queued',
+        initialStatus,
         0,
         0,
         null,
@@ -736,16 +739,24 @@ class _TaskRunner {
   }
 
   void cancelTask(String taskId) {
+    final row =
+        db.select('select status from tasks where id = ? limit 1', [taskId])
+            .firstOrNull;
+    final status = (row?['status'] ?? '').toString();
     final now = DateTime.now().millisecondsSinceEpoch;
     db.execute(
       '''
       update tasks
       set status = 'canceled', message = null, updated_at = ?
-      where id = ? and status in ('queued','running','paused','failed')
+      where id = ? and status in ('queued','running','paused','failed','uploading')
       ''',
       [now, taskId],
     );
     _removeFromQueue(taskId);
+    if (status == 'uploading') {
+      _stopByTaskId[taskId] = _TaskStopMode.cancel;
+      return;
+    }
     if (isRunning(taskId)) {
       _stopByTaskId[taskId] = _TaskStopMode.cancel;
       return;
@@ -3801,51 +3812,231 @@ Handler buildHandler({
   });
 
   api.post('/v1/tasks/upload', (Request req) async {
-    final parts = await _readMultipart(req);
-    final metaPart = parts.fields['meta'];
-    final zipPart = parts.files['zip'];
-    if (metaPart == null) {
-      return _json(400, {'ok': false, 'error': 'missing meta'});
-    }
-    if (zipPart == null) {
-      return _json(400, {'ok': false, 'error': 'missing zip'});
+    final contentType = req.headers['content-type'];
+    final boundary = _boundaryFromContentType(contentType);
+    if (boundary == null) {
+      return _json(400, {'ok': false, 'error': 'missing multipart boundary'});
     }
 
-    Map<String, dynamic> meta;
-    try {
-      meta = jsonDecode(metaPart) as Map<String, dynamic>;
-    } catch (_) {
-      return _json(400, {'ok': false, 'error': 'invalid meta json'});
+    final totalHint = int.tryParse(req.headers['content-length'] ?? '') ?? 0;
+
+    String? taskId;
+    Directory? workDir;
+    _UploadFile? tmpZip;
+    _UploadFile? tmpCover;
+    var gotMeta = false;
+    var gotZip = false;
+
+    var uploadedBytes = 0;
+    var lastUpdateBytes = 0;
+    var lastUpdateAt = 0;
+
+    void updateUploadProgress({bool force = false}) {
+      final id = taskId;
+      if (id == null) return;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final byteDelta = (uploadedBytes - lastUpdateBytes).abs();
+      final timeDelta = (now - lastUpdateAt).abs();
+      if (!force && byteDelta < 256 * 1024 && timeDelta < 400) return;
+      lastUpdateBytes = uploadedBytes;
+      lastUpdateAt = now;
+      db.execute(
+        '''
+        update tasks
+        set progress = ?, total = ?, message = null, updated_at = ?
+        where id = ? and status = 'uploading'
+        ''',
+        [uploadedBytes, totalHint, now, id],
+      );
     }
 
-    final id = (meta['id'] ?? '').toString().trim();
-    if (id.isEmpty) {
-      return _json(400, {'ok': false, 'error': 'missing meta.id'});
-    }
-
-    String taskId;
-    try {
-      taskId = taskRunner.createUploadTask(meta);
-    } catch (e) {
-      final msg = e.toString();
-      if (msg.contains('task already exists')) {
-        return _json(409, {'ok': false, 'error': 'task already exists'});
+    void cleanupTemp(_UploadFile? f) {
+      if (f == null) return;
+      try {
+        f.file.parent.deleteSync(recursive: true);
+      } catch (_) {
+        // ignore
       }
-      return _json(500, {'ok': false, 'error': 'create task failed: $e'});
     }
 
-    final workDir = taskRunner.taskTempDir(taskId)..createSync(recursive: true);
+    Future<_UploadFile> savePartToTemp(
+      MimeMultipart part, {
+      required String fieldName,
+      required String filename,
+    }) async {
+      final tmpDir = Directory.systemTemp.createTempSync('pica_server_');
+      final tmpFile = File(p.join(tmpDir.path, 'upload.bin'));
+      final sink = tmpFile.openWrite();
+      await part.pipe(sink);
+      await sink.flush();
+      await sink.close();
+      return _UploadFile(fieldName: fieldName, filename: filename, file: tmpFile);
+    }
+
+    Future<void> saveFilePartTo(String outPath, MimeMultipart part) async {
+      final file = File(outPath);
+      if (file.existsSync()) {
+        try {
+          file.deleteSync();
+        } catch (_) {
+          // ignore
+        }
+      }
+      file.createSync(recursive: true);
+      final sink = file.openWrite();
+      try {
+        await for (final chunk in part) {
+          final id = taskId;
+          if (id != null && taskRunner.stopMode(id) != null) {
+            throw const _TaskStopped(_TaskStopMode.cancel);
+          }
+          sink.add(chunk);
+          uploadedBytes += chunk.length;
+          updateUploadProgress();
+        }
+      } finally {
+        await sink.flush();
+        await sink.close();
+      }
+    }
+
+    final transformer = MimeMultipartTransformer(boundary);
+    final stream = transformer.bind(req.read());
+
     try {
-      await zipPart.saveTo(p.join(workDir.path, 'comic.zip'));
-      final coverPart = parts.files['cover'];
-      if (coverPart != null) {
-        await coverPart.saveTo(p.join(workDir.path, 'cover.jpg'));
+      await for (final part in stream) {
+        final disposition = part.headers['content-disposition'];
+        if (disposition == null) continue;
+
+        final cd = _parseContentDisposition(disposition);
+        final name = cd['name'];
+        if (name == null || name.isEmpty) continue;
+
+        final filename = cd['filename'];
+        if (filename == null || filename.isEmpty) {
+          final value = await utf8.decodeStream(part);
+          if (name != 'meta') continue;
+
+          Map<String, dynamic> meta;
+          try {
+            meta = Map<String, dynamic>.from(jsonDecode(value) as Map);
+          } catch (_) {
+            return _json(400, {'ok': false, 'error': 'invalid meta json'});
+          }
+
+          final id = (meta['id'] ?? '').toString().trim();
+          if (id.isEmpty) {
+            return _json(400, {'ok': false, 'error': 'missing meta.id'});
+          }
+
+          try {
+            final createdTaskId =
+                taskRunner.createUploadTask(meta, initialStatus: 'uploading');
+            taskId = createdTaskId;
+            workDir = taskRunner.taskTempDir(createdTaskId)
+              ..createSync(recursive: true);
+          } catch (e) {
+            final msg = e.toString();
+            if (msg.contains('task already exists')) {
+              cleanupTemp(tmpZip);
+              cleanupTemp(tmpCover);
+              return _json(409, {'ok': false, 'error': 'task already exists'});
+            }
+            cleanupTemp(tmpZip);
+            cleanupTemp(tmpCover);
+            return _json(500, {'ok': false, 'error': 'create task failed: $e'});
+          }
+
+          gotMeta = true;
+          updateUploadProgress(force: true);
+
+          final dir = workDir;
+          final zip = tmpZip;
+          if (zip != null) {
+            gotZip = true;
+            await zip.saveTo(p.join(dir.path, 'comic.zip'));
+            tmpZip = null;
+          }
+          final cover = tmpCover;
+          if (cover != null) {
+            await cover.saveTo(p.join(dir.path, 'cover.jpg'));
+            tmpCover = null;
+          }
+          continue;
+        }
+
+        if (!gotMeta || taskId == null || workDir == null) {
+          if (name == 'zip' && tmpZip == null) {
+            tmpZip = await savePartToTemp(part, fieldName: name, filename: filename);
+            gotZip = true;
+            continue;
+          }
+          if (name == 'cover' && tmpCover == null) {
+            tmpCover =
+                await savePartToTemp(part, fieldName: name, filename: filename);
+            continue;
+          }
+          await part.drain<void>();
+          continue;
+        }
+
+        if (name == 'zip') {
+          gotZip = true;
+          await saveFilePartTo(p.join(workDir.path, 'comic.zip'), part);
+          updateUploadProgress(force: true);
+          continue;
+        }
+
+        if (name == 'cover') {
+          await saveFilePartTo(p.join(workDir.path, 'cover.jpg'), part);
+          updateUploadProgress(force: true);
+          continue;
+        }
+
+        await part.drain<void>();
       }
     } catch (e) {
-      taskRunner.deleteTask(taskId);
+      if (e is _TaskStopped && taskId != null) {
+        final now = DateTime.now().millisecondsSinceEpoch;
+        db.execute(
+          '''
+          update tasks
+          set status = 'canceled', message = null, updated_at = ?
+          where id = ? and status = 'uploading'
+          ''',
+          [now, taskId],
+        );
+        taskRunner._tryDeleteTaskTemp(taskId);
+        return _json(409, {'ok': false, 'error': 'canceled'});
+      }
+      if (taskId != null) {
+        taskRunner.deleteTask(taskId);
+      } else {
+        cleanupTemp(tmpZip);
+        cleanupTemp(tmpCover);
+      }
       return _json(500, {'ok': false, 'error': 'save upload failed: $e'});
     }
 
+    if (!gotMeta || taskId == null) {
+      cleanupTemp(tmpZip);
+      cleanupTemp(tmpCover);
+      return _json(400, {'ok': false, 'error': 'missing meta'});
+    }
+    if (!gotZip) {
+      taskRunner.deleteTask(taskId);
+      return _json(400, {'ok': false, 'error': 'missing zip'});
+    }
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      update tasks
+      set status = 'queued', progress = 0, total = 0, message = null, updated_at = ?
+      where id = ? and status = 'uploading'
+      ''',
+      [now, taskId],
+    );
     taskRunner.enqueue(taskId);
     return _json(200, {'ok': true, 'taskId': taskId});
   });
