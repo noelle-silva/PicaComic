@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_reorderable_grid_view/widgets/reorderable_builder.dart';
+import 'package:pica_comic/base.dart';
 import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/foundation/image_loader/cached_image.dart';
@@ -15,6 +16,8 @@ class ServerFavoritesPage extends StatefulWidget {
 }
 
 class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
+  static const int _kServerFavoritesOrderIndex = 5;
+
   bool loading = true;
   String? error;
 
@@ -23,9 +26,23 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
   List<ServerFavoriteItem> items = const [];
 
   bool reorderMode = false;
-  final Key _gridKey = UniqueKey();
+  final Key _normalGridKey = UniqueKey();
+  final GlobalKey _reorderGridKey = GlobalKey();
   final _reorderWidgetKey = GlobalKey();
   final _scrollController = ScrollController();
+  bool _descOrder =
+      appdata.implicitData.length > _kServerFavoritesOrderIndex &&
+          appdata.implicitData[_kServerFavoritesOrderIndex] == "1";
+
+  void _toggleDisplayOrder() {
+    setState(() => _descOrder = !_descOrder);
+    while (appdata.implicitData.length <= _kServerFavoritesOrderIndex) {
+      appdata.implicitData.add("0");
+    }
+    appdata.implicitData[_kServerFavoritesOrderIndex] = _descOrder ? "1" : "0";
+    appdata.writeImplicitData();
+    showToast(message: (_descOrder ? "倒序".tl : "正序".tl));
+  }
 
   Color _lightenColor(Color color, double lightenValue) {
     final red = (color.red + ((255 - color.red) * lightenValue)).round();
@@ -330,8 +347,10 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
       );
     }
 
-    final tiles = List.generate(items.length, (index) {
-      final item = items[index];
+    final displayItems = _descOrder ? items.reversed.toList() : items;
+
+    final tiles = List.generate(displayItems.length, (index) {
+      final item = displayItems[index];
       return _ServerFavoriteTile(
         item: item,
         onTap: () => _openComic(item),
@@ -344,7 +363,7 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
 
     if (!reorderMode) {
       return GridView(
-        key: _gridKey,
+        key: _normalGridKey,
         controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         gridDelegate: SliverGridDelegateWithComics(),
@@ -359,9 +378,11 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
           ? const Duration(milliseconds: 100)
           : const Duration(milliseconds: 500),
       onReorder: (reorderFunc) async {
-        final reordered = reorderFunc(items);
+        final reordered = List<ServerFavoriteItem>.from(
+          reorderFunc(displayItems),
+        );
         setState(() {
-          items = List<ServerFavoriteItem>.from(reordered);
+          items = _descOrder ? reordered.reversed.toList() : reordered;
         });
         try {
           await PicaServer.instance.reorderFavorites(
@@ -378,7 +399,7 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
       ),
       builder: (children) {
         return GridView(
-          key: _gridKey,
+          key: _reorderGridKey,
           controller: _scrollController,
           physics: const AlwaysScrollableScrollPhysics(),
           gridDelegate: SliverGridDelegateWithComics(),
@@ -406,6 +427,16 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
                 ? null
                 : () => setState(() => reorderMode = !reorderMode),
             icon: Icon(reorderMode ? Icons.check : Icons.swap_vert),
+          ),
+          Tooltip(
+            message: (_descOrder ? "倒序".tl : "正序".tl),
+            child: IconButton(
+              onPressed:
+                  (items.isEmpty || reorderMode) ? null : _toggleDisplayOrder,
+              icon: Icon(
+                _descOrder ? Icons.arrow_downward : Icons.arrow_upward,
+              ),
+            ),
           ),
           IconButton(
             tooltip: "刷新".tl,

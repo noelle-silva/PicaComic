@@ -130,6 +130,7 @@ class Appdata {
     "0", // 点击关闭按钮时不显示提示
     webUA, // UA
     "", // private server api key
+    "0", // 服务器收藏显示顺序: 0-正序, 1-倒序
   ];
 
   void writeImplicitData() async {
