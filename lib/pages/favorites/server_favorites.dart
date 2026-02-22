@@ -353,7 +353,7 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
       final item = displayItems[index];
       return _ServerFavoriteTile(
         item: item,
-        onTap: () => _openComic(item),
+        onTap: reorderMode ? () {} : () => _openComic(item),
         onMove: () => _moveItem(item),
         onDelete: () => _deleteItem(item),
         enableLongPressed: !reorderMode,
@@ -374,9 +374,10 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
     return ReorderableBuilder(
       key: _reorderWidgetKey,
       scrollController: _scrollController,
+      enableLongPress: !App.isDesktop,
       longPressDelay: App.isDesktop
           ? const Duration(milliseconds: 100)
-          : const Duration(milliseconds: 500),
+          : const Duration(milliseconds: 350),
       onReorder: (reorderFunc) async {
         final reordered = List<ServerFavoriteItem>.from(
           reorderFunc(displayItems),
@@ -425,7 +426,15 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
             tooltip: reorderMode ? "完成排序".tl : "排序".tl,
             onPressed: items.isEmpty
                 ? null
-                : () => setState(() => reorderMode = !reorderMode),
+                : () {
+                    final next = !reorderMode;
+                    setState(() => reorderMode = next);
+                    if (next) {
+                      showToast(
+                        message: App.isDesktop ? "拖动以排序".tl : "长按并拖动以排序".tl,
+                      );
+                    }
+                  },
             icon: Icon(reorderMode ? Icons.check : Icons.swap_vert),
           ),
           Tooltip(
