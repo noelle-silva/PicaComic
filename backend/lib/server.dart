@@ -1195,8 +1195,9 @@ class _TaskRunner {
         : const <String>[];
 
     final jsonRaw = meta['json'];
-    final downloadedJson =
-        jsonRaw is Map ? Map<String, dynamic>.from(jsonRaw) : <String, dynamic>{};
+    final downloadedJson = jsonRaw is Map
+        ? Map<String, dynamic>.from(jsonRaw)
+        : <String, dynamic>{};
 
     return _DownloadedComicData(
       id: id,
@@ -1362,290 +1363,291 @@ Future<_DownloadedComicData> _downloadPicacg(
 
   final httpClient = HttpClient();
   try {
-  Future<Map<String, dynamic>> getJson(String pathWithQuery) async {
-    final uri = Uri.parse('$apiUrl/$pathWithQuery');
-    Object? lastErr;
-    for (var i = 0; i < 3; i++) {
-      try {
-        final res = await _httpGetBytes(
-          uri,
-          headers: headersFor('GET', pathWithQuery),
-          timeout: const Duration(seconds: 20),
-          maxBytes: 10 * 1024 * 1024,
-          client: httpClient,
-        );
-        final body = res.bodyText();
-        Object? decoded;
+    Future<Map<String, dynamic>> getJson(String pathWithQuery) async {
+      final uri = Uri.parse('$apiUrl/$pathWithQuery');
+      Object? lastErr;
+      for (var i = 0; i < 3; i++) {
         try {
-          decoded = jsonDecode(body);
-        } catch (e) {
-          final head = _snippet(body);
-          throw StateError(
-            head.isEmpty
-                ? 'picacg api returned non-json (${res.statusCode}) @ ${res.uri}: $e'
-                : 'picacg api returned non-json (${res.statusCode}) @ ${res.uri}: $head',
+          final res = await _httpGetBytes(
+            uri,
+            headers: headersFor('GET', pathWithQuery),
+            timeout: const Duration(seconds: 20),
+            maxBytes: 10 * 1024 * 1024,
+            client: httpClient,
           );
-        }
-        if (decoded is! Map) throw StateError('invalid json');
-        final map = Map<String, dynamic>.from(decoded);
-        if (res.statusCode == 200) return map;
-        final msg =
-            (map['message'] ?? map['error'] ?? 'request failed').toString();
-        throw StateError('picacg request failed: ${res.statusCode} $msg');
-      } catch (e) {
-        lastErr = e;
-        await Future.delayed(Duration(milliseconds: 300 * (1 << i)));
-      }
-    }
-    throw lastErr ?? Exception('request failed');
-  }
-
-  final id = target.trim();
-  if (id.isEmpty) throw StateError('invalid target');
-
-  ctx.setMessage('fetch comic info');
-  final comicRes = await getJson('comics/$id');
-  final comic =
-      comicRes['data'] is Map ? (comicRes['data'] as Map)['comic'] : null;
-  if (comic is! Map) throw StateError('invalid comic response');
-
-  ctx.setMessage('fetch eps');
-  Future<List<String>> getEps() async {
-    final eps = <String>[];
-    var page = 1;
-    while (true) {
-      final res = await getJson('comics/$id/eps?page=$page');
-      final data = res['data'];
-      if (data is! Map) break;
-      final epsObj = data['eps'];
-      if (epsObj is! Map) break;
-      final docs = epsObj['docs'];
-      if (docs is List) {
-        for (final d in docs) {
-          if (d is Map) eps.add((d['title'] ?? '').toString());
+          final body = res.bodyText();
+          Object? decoded;
+          try {
+            decoded = jsonDecode(body);
+          } catch (e) {
+            final head = _snippet(body);
+            throw StateError(
+              head.isEmpty
+                  ? 'picacg api returned non-json (${res.statusCode}) @ ${res.uri}: $e'
+                  : 'picacg api returned non-json (${res.statusCode}) @ ${res.uri}: $head',
+            );
+          }
+          if (decoded is! Map) throw StateError('invalid json');
+          final map = Map<String, dynamic>.from(decoded);
+          if (res.statusCode == 200) return map;
+          final msg =
+              (map['message'] ?? map['error'] ?? 'request failed').toString();
+          throw StateError('picacg request failed: ${res.statusCode} $msg');
+        } catch (e) {
+          lastErr = e;
+          await Future.delayed(Duration(milliseconds: 300 * (1 << i)));
         }
       }
-      final pages = int.tryParse((epsObj['pages'] ?? '').toString()) ?? page;
-      if (pages <= page) break;
-      page++;
+      throw lastErr ?? Exception('request failed');
     }
-    return eps.reversed.toList();
-  }
 
-  Future<List<String>> getPages(int order) async {
-    final urls = <String>[];
-    var page = 1;
-    while (true) {
-      final res = await getJson('comics/$id/order/$order/pages?page=$page');
-      final data = res['data'];
-      if (data is! Map) break;
-      final pagesObj = data['pages'];
-      if (pagesObj is! Map) break;
-      final docs = pagesObj['docs'];
-      if (docs is List) {
-        for (final d in docs) {
-          if (d is! Map) continue;
-          final media = d['media'];
-          if (media is! Map) continue;
-          final fs = (media['fileServer'] ?? '').toString();
-          final path = (media['path'] ?? '').toString();
-          if (fs.isEmpty || path.isEmpty) continue;
-          urls.add('$fs/static/$path');
+    final id = target.trim();
+    if (id.isEmpty) throw StateError('invalid target');
+
+    ctx.setMessage('fetch comic info');
+    final comicRes = await getJson('comics/$id');
+    final comic =
+        comicRes['data'] is Map ? (comicRes['data'] as Map)['comic'] : null;
+    if (comic is! Map) throw StateError('invalid comic response');
+
+    ctx.setMessage('fetch eps');
+    Future<List<String>> getEps() async {
+      final eps = <String>[];
+      var page = 1;
+      while (true) {
+        final res = await getJson('comics/$id/eps?page=$page');
+        final data = res['data'];
+        if (data is! Map) break;
+        final epsObj = data['eps'];
+        if (epsObj is! Map) break;
+        final docs = epsObj['docs'];
+        if (docs is List) {
+          for (final d in docs) {
+            if (d is Map) eps.add((d['title'] ?? '').toString());
+          }
         }
+        final pages = int.tryParse((epsObj['pages'] ?? '').toString()) ?? page;
+        if (pages <= page) break;
+        page++;
       }
-      final pages = int.tryParse((pagesObj['pages'] ?? '').toString()) ?? page;
-      if (pages <= page) break;
-      page++;
+      return eps.reversed.toList();
     }
-    return urls;
-  }
 
-  final epsTitles = await getEps();
-  final epsRaw = params['eps'];
-  final selected = <int>[];
-  if (epsRaw is List) {
-    for (final e in epsRaw) {
-      final v = int.tryParse(e.toString());
-      if (v == null) continue;
-      if (v < 0) continue;
-      selected.add(v);
+    Future<List<String>> getPages(int order) async {
+      final urls = <String>[];
+      var page = 1;
+      while (true) {
+        final res = await getJson('comics/$id/order/$order/pages?page=$page');
+        final data = res['data'];
+        if (data is! Map) break;
+        final pagesObj = data['pages'];
+        if (pagesObj is! Map) break;
+        final docs = pagesObj['docs'];
+        if (docs is List) {
+          for (final d in docs) {
+            if (d is! Map) continue;
+            final media = d['media'];
+            if (media is! Map) continue;
+            final fs = (media['fileServer'] ?? '').toString();
+            final path = (media['path'] ?? '').toString();
+            if (fs.isEmpty || path.isEmpty) continue;
+            urls.add('$fs/static/$path');
+          }
+        }
+        final pages =
+            int.tryParse((pagesObj['pages'] ?? '').toString()) ?? page;
+        if (pages <= page) break;
+        page++;
+      }
+      return urls;
     }
-  }
-  if (selected.isEmpty && epsTitles.isNotEmpty) {
-    selected.addAll(List<int>.generate(epsTitles.length, (i) => i));
-  }
 
-  final title = (comic['title'] ?? '').toString();
-  final author = (comic['author'] ?? '').toString();
-
-  String thumbUrl = '';
-  final thumb = comic['thumb'];
-  if (thumb is Map) {
-    final fs = (thumb['fileServer'] ?? '').toString();
-    final path = (thumb['path'] ?? '').toString();
-    if (fs.isNotEmpty && path.isNotEmpty) {
-      thumbUrl = '$fs/static/$path';
+    final epsTitles = await getEps();
+    final epsRaw = params['eps'];
+    final selected = <int>[];
+    if (epsRaw is List) {
+      for (final e in epsRaw) {
+        final v = int.tryParse(e.toString());
+        if (v == null) continue;
+        if (v < 0) continue;
+        selected.add(v);
+      }
     }
-  }
-
-  final creatorRaw = comic['_creator'];
-  final avatar = creatorRaw is Map ? creatorRaw['avatar'] : null;
-  var avatarUrl = '';
-  if (avatar is Map) {
-    final fs = (avatar['fileServer'] ?? '').toString();
-    final path = (avatar['path'] ?? '').toString();
-    if (fs.isNotEmpty && path.isNotEmpty) {
-      avatarUrl = '$fs/static/$path';
+    if (selected.isEmpty && epsTitles.isNotEmpty) {
+      selected.addAll(List<int>.generate(epsTitles.length, (i) => i));
     }
-  }
 
-  final creator = <String, dynamic>{
-    'id': (comic['_id'] ?? id).toString(),
-    'title': (creatorRaw is Map ? creatorRaw['title'] : null) ?? 'Unknown',
-    'email': '',
-    'name': (creatorRaw is Map ? creatorRaw['name'] : null) ?? 'Unknown',
-    'level': creatorRaw is Map ? (creatorRaw['level'] ?? 0) : 0,
-    'exp': creatorRaw is Map ? (creatorRaw['exp'] ?? 0) : 0,
-    'avatarUrl': avatarUrl,
-    'frameUrl': null,
-    'isPunched': null,
-    'slogan': (creatorRaw is Map ? creatorRaw['slogan'] : null) ?? '无',
-  };
+    final title = (comic['title'] ?? '').toString();
+    final author = (comic['author'] ?? '').toString();
 
-  final categories = <String>[];
-  final categoriesRaw = comic['categories'];
-  if (categoriesRaw is List) {
-    for (final c in categoriesRaw) {
-      final s = c.toString().trim();
-      if (s.isNotEmpty) categories.add(s);
+    String thumbUrl = '';
+    final thumb = comic['thumb'];
+    if (thumb is Map) {
+      final fs = (thumb['fileServer'] ?? '').toString();
+      final path = (thumb['path'] ?? '').toString();
+      if (fs.isNotEmpty && path.isNotEmpty) {
+        thumbUrl = '$fs/static/$path';
+      }
     }
-  }
-  final tags = <String>[];
-  final tagsRaw = comic['tags'];
-  if (tagsRaw is List) {
-    for (final t in tagsRaw) {
-      final s = t.toString().trim();
-      if (s.isNotEmpty) tags.add(s);
+
+    final creatorRaw = comic['_creator'];
+    final avatar = creatorRaw is Map ? creatorRaw['avatar'] : null;
+    var avatarUrl = '';
+    if (avatar is Map) {
+      final fs = (avatar['fileServer'] ?? '').toString();
+      final path = (avatar['path'] ?? '').toString();
+      if (fs.isNotEmpty && path.isNotEmpty) {
+        avatarUrl = '$fs/static/$path';
+      }
     }
-  }
 
-  final comicItemJson = <String, dynamic>{
-    'creator': creator,
-    'id': id,
-    'title': title,
-    'description': (comic['description'] ?? '无').toString(),
-    'thumbUrl': thumbUrl,
-    'author': author,
-    'chineseTeam': (comic['chineseTeam'] ?? 'Unknown').toString(),
-    'categories': categories,
-    'tags': tags,
-    'likes': int.tryParse((comic['likesCount'] ?? '0').toString()) ?? 0,
-    'comments': int.tryParse((comic['commentsCount'] ?? '0').toString()) ?? 0,
-    'isLiked': comic['isLiked'] == true,
-    'isFavourite': comic['isFavourite'] == true,
-    'epsCount': int.tryParse((comic['epsCount'] ?? '0').toString()) ?? 0,
-    'time': (comic['updated_at'] ?? '').toString(),
-    'pagesCount': int.tryParse((comic['pagesCount'] ?? '0').toString()) ?? 0,
-  };
+    final creator = <String, dynamic>{
+      'id': (comic['_id'] ?? id).toString(),
+      'title': (creatorRaw is Map ? creatorRaw['title'] : null) ?? 'Unknown',
+      'email': '',
+      'name': (creatorRaw is Map ? creatorRaw['name'] : null) ?? 'Unknown',
+      'level': creatorRaw is Map ? (creatorRaw['level'] ?? 0) : 0,
+      'exp': creatorRaw is Map ? (creatorRaw['exp'] ?? 0) : 0,
+      'avatarUrl': avatarUrl,
+      'frameUrl': null,
+      'isPunched': null,
+      'slogan': (creatorRaw is Map ? creatorRaw['slogan'] : null) ?? '无',
+    };
 
-  final downloadedJson = <String, dynamic>{
-    'comicItem': comicItemJson,
-    'chapters': epsTitles,
-    'size': null,
-    'downloadedChapters': selected,
-  };
-
-  final comicDir = workDir..createSync(recursive: true);
-  final pagesRoot = Directory(p.join(comicDir.path, 'pages'))
-    ..createSync(recursive: true);
-
-  // compute total
-  var totalPages = 0;
-  final epPages = <int, List<String>>{};
-  ctx.setMessage('fetch pages');
-  for (final idx in selected) {
-    ctx.throwIfStopped();
-    final order = idx + 1;
-    final urls = await getPages(order);
-    epPages[order] = urls;
-    totalPages += urls.length;
-  }
-  ctx.setTotal(totalPages + (thumbUrl.isNotEmpty ? 1 : 0));
-  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
-
-  final fileConcurrent = _concurrencyPolicy.fileConcurrent('picacg');
-  final jobs = <Future<void> Function()>[];
-
-  if (thumbUrl.isNotEmpty) {
-    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
-    if (!_nonEmptyFileExists(coverFile)) {
-      jobs.add(() async {
-        ctx.setMessage('download cover');
-        await _downloadToFile(
-          Uri.parse(thumbUrl),
-          coverFile,
-          timeout: const Duration(minutes: 2),
-          maxBytes: 20 * 1024 * 1024,
-          retries: _retryPolicy.fileRetries('picacg'),
-          stopCheck: ctx.stopCheck,
-          client: httpClient,
-        );
-        ctx.advance();
-      });
+    final categories = <String>[];
+    final categoriesRaw = comic['categories'];
+    if (categoriesRaw is List) {
+      for (final c in categoriesRaw) {
+        final s = c.toString().trim();
+        if (s.isNotEmpty) categories.add(s);
+      }
     }
-  }
-
-  for (final entry in epPages.entries) {
-    final epNo = entry.key;
-    final urls = entry.value;
-    final epDir = Directory(p.join(pagesRoot.path, epNo.toString()));
-    epDir.createSync(recursive: true);
-    for (var i = 0; i < urls.length; i++) {
-      final pageNo = i + 1;
-      if (_pageFileExists(epDir, pageNo)) continue;
-      final u = urls[i];
-      jobs.add(() async {
-        ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
-        final uri = Uri.parse(u);
-        final ext = _guessExtFromUrl(uri);
-        await _downloadToFile(
-          uri,
-          File(p.join(epDir.path, '$pageNo.$ext')),
-          timeout: const Duration(minutes: 5),
-          maxBytes: 50 * 1024 * 1024,
-          retries: _retryPolicy.fileRetries('picacg'),
-          stopCheck: ctx.stopCheck,
-          client: httpClient,
-        );
-        ctx.advance();
-      });
+    final tags = <String>[];
+    final tagsRaw = comic['tags'];
+    if (tagsRaw is List) {
+      for (final t in tagsRaw) {
+        final s = t.toString().trim();
+        if (s.isNotEmpty) tags.add(s);
+      }
     }
-  }
 
-  var closed = false;
-  void abort() {
-    if (closed) return;
-    closed = true;
-    httpClient.close(force: true);
-  }
+    final comicItemJson = <String, dynamic>{
+      'creator': creator,
+      'id': id,
+      'title': title,
+      'description': (comic['description'] ?? '无').toString(),
+      'thumbUrl': thumbUrl,
+      'author': author,
+      'chineseTeam': (comic['chineseTeam'] ?? 'Unknown').toString(),
+      'categories': categories,
+      'tags': tags,
+      'likes': int.tryParse((comic['likesCount'] ?? '0').toString()) ?? 0,
+      'comments': int.tryParse((comic['commentsCount'] ?? '0').toString()) ?? 0,
+      'isLiked': comic['isLiked'] == true,
+      'isFavourite': comic['isFavourite'] == true,
+      'epsCount': int.tryParse((comic['epsCount'] ?? '0').toString()) ?? 0,
+      'time': (comic['updated_at'] ?? '').toString(),
+      'pagesCount': int.tryParse((comic['pagesCount'] ?? '0').toString()) ?? 0,
+    };
 
-  await _forEachConcurrent(
-    jobs,
-    fileConcurrent,
-    (job) => job(),
-    stopCheck: ctx.stopCheck,
-    onError: abort,
-  );
+    final downloadedJson = <String, dynamic>{
+      'comicItem': comicItemJson,
+      'chapters': epsTitles,
+      'size': null,
+      'downloadedChapters': selected,
+    };
 
-  return _DownloadedComicData(
-    id: id,
-    title: title.isEmpty ? id : title,
-    subtitle: author,
-    type: 0,
-    tags: tags,
-    directory: _safeId(id),
-    downloadedJson: downloadedJson,
-  );
+    final comicDir = workDir..createSync(recursive: true);
+    final pagesRoot = Directory(p.join(comicDir.path, 'pages'))
+      ..createSync(recursive: true);
+
+    // compute total
+    var totalPages = 0;
+    final epPages = <int, List<String>>{};
+    ctx.setMessage('fetch pages');
+    for (final idx in selected) {
+      ctx.throwIfStopped();
+      final order = idx + 1;
+      final urls = await getPages(order);
+      epPages[order] = urls;
+      totalPages += urls.length;
+    }
+    ctx.setTotal(totalPages + (thumbUrl.isNotEmpty ? 1 : 0));
+    ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
+
+    final fileConcurrent = _concurrencyPolicy.fileConcurrent('picacg');
+    final jobs = <Future<void> Function()>[];
+
+    if (thumbUrl.isNotEmpty) {
+      final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+      if (!_nonEmptyFileExists(coverFile)) {
+        jobs.add(() async {
+          ctx.setMessage('download cover');
+          await _downloadToFile(
+            Uri.parse(thumbUrl),
+            coverFile,
+            timeout: const Duration(minutes: 2),
+            maxBytes: 20 * 1024 * 1024,
+            retries: _retryPolicy.fileRetries('picacg'),
+            stopCheck: ctx.stopCheck,
+            client: httpClient,
+          );
+          ctx.advance();
+        });
+      }
+    }
+
+    for (final entry in epPages.entries) {
+      final epNo = entry.key;
+      final urls = entry.value;
+      final epDir = Directory(p.join(pagesRoot.path, epNo.toString()));
+      epDir.createSync(recursive: true);
+      for (var i = 0; i < urls.length; i++) {
+        final pageNo = i + 1;
+        if (_pageFileExists(epDir, pageNo)) continue;
+        final u = urls[i];
+        jobs.add(() async {
+          ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
+          final uri = Uri.parse(u);
+          final ext = _guessExtFromUrl(uri);
+          await _downloadToFile(
+            uri,
+            File(p.join(epDir.path, '$pageNo.$ext')),
+            timeout: const Duration(minutes: 5),
+            maxBytes: 50 * 1024 * 1024,
+            retries: _retryPolicy.fileRetries('picacg'),
+            stopCheck: ctx.stopCheck,
+            client: httpClient,
+          );
+          ctx.advance();
+        });
+      }
+    }
+
+    var closed = false;
+    void abort() {
+      if (closed) return;
+      closed = true;
+      httpClient.close(force: true);
+    }
+
+    await _forEachConcurrent(
+      jobs,
+      fileConcurrent,
+      (job) => job(),
+      stopCheck: ctx.stopCheck,
+      onError: abort,
+    );
+
+    return _DownloadedComicData(
+      id: id,
+      title: title.isEmpty ? id : title,
+      subtitle: author,
+      type: 0,
+      tags: tags,
+      directory: _safeId(id),
+      downloadedJson: downloadedJson,
+    );
   } finally {
     httpClient.close(force: true);
   }
@@ -1696,84 +1698,9 @@ Future<_DownloadedComicData> _downloadEhentai(
 
   final httpClient = HttpClient();
   try {
-  ctx.setMessage('fetch gallery info');
-  final galleryRes = await _httpGetBytesWithRetry(
-    galleryUri,
-    headers: headersBase,
-    timeout: const Duration(seconds: 25),
-    retries: 2,
-    maxBytes: 12 * 1024 * 1024,
-    stopCheck: ctx.stopCheck,
-    client: httpClient,
-  );
-  final doc = html.parse(galleryRes.bodyText());
-
-  final title = (doc.querySelector('h1#gn')?.text ?? '').trim();
-  var subTitle = (doc.querySelector('h1#gj')?.text ?? '').trim();
-  if (subTitle.isEmpty) subTitle = '';
-  final uploader = (doc.querySelector('div#gdn a')?.text ?? '').trim();
-
-  var maxPage = '1';
-  for (final td in doc.querySelectorAll('td.gdt2')) {
-    final t = td.text;
-    if (t.contains('pages')) {
-      final m = RegExp(r'\d+').firstMatch(t);
-      if (m != null) maxPage = m.group(0)!;
-      break;
-    }
-  }
-
-  final type = (doc.querySelector('.cs')?.text ?? '').trim();
-  final timeText =
-      (doc.querySelector('div#gdd > table > tbody > tr > td.gdt2')?.text ?? '')
-          .trim();
-
-  var coverPath = '';
-  final style =
-      doc.querySelector('div#gleft > div#gd1 > div')?.attributes['style'];
-  if (style != null) {
-    final m = RegExp(
-      r'https?://([-a-zA-Z0-9.]+(/\\S*)?\\.(?:jpg|jpeg|gif|png|webp))',
-    ).firstMatch(style);
-    if (m != null) coverPath = m.group(0)!;
-  }
-
-  final tagsMap = <String, List<String>>{};
-  for (final tr in doc.querySelectorAll('div#taglist > table > tbody > tr')) {
-    if (tr.children.length < 2) continue;
-    final key = tr.children[0].text.replaceAll(':', '').trim();
-    final list = <String>[];
-    for (final div in tr.children[1].children) {
-      final a = div.querySelector('a');
-      if (a == null) continue;
-      final v = a.text.trim();
-      if (v.isNotEmpty) list.add(v);
-    }
-    if (key.isNotEmpty) tagsMap[key] = list;
-  }
-  final tagsFlat = <String>[];
-  for (final values in tagsMap.values) {
-    tagsFlat.addAll(values);
-  }
-
-  // collect reader links across thumbnail pages
-  final firstLinks = doc.querySelectorAll('div#gdt > a');
-  final perThumbPage = firstLinks.length;
-  if (perThumbPage <= 0) throw StateError('no thumbnail links');
-  final totalPages = int.tryParse(maxPage) ?? 1;
-  final totalThumbPages = (totalPages / perThumbPage).ceil();
-
-  final readerLinks = <String>[];
-  for (var pageno = 0; pageno < totalThumbPages; pageno++) {
-    ctx.throwIfStopped();
-    final u = galleryUri.replace(
-      queryParameters: {
-        ...galleryUri.queryParameters,
-        if (pageno > 0) 'p': pageno.toString(),
-      },
-    );
-    final res = await _httpGetBytesWithRetry(
-      u,
+    ctx.setMessage('fetch gallery info');
+    final galleryRes = await _httpGetBytesWithRetry(
+      galleryUri,
       headers: headersBase,
       timeout: const Duration(seconds: 25),
       retries: 2,
@@ -1781,41 +1708,167 @@ Future<_DownloadedComicData> _downloadEhentai(
       stopCheck: ctx.stopCheck,
       client: httpClient,
     );
-    final d = html.parse(res.bodyText());
-    for (final a in d.querySelectorAll('div#gdt > a')) {
-      final href = a.attributes['href'];
-      if (href == null || href.trim().isEmpty) continue;
-      readerLinks.add(href);
+    final doc = html.parse(galleryRes.bodyText());
+
+    final title = (doc.querySelector('h1#gn')?.text ?? '').trim();
+    var subTitle = (doc.querySelector('h1#gj')?.text ?? '').trim();
+    if (subTitle.isEmpty) subTitle = '';
+    final uploader = (doc.querySelector('div#gdn a')?.text ?? '').trim();
+
+    var maxPage = '1';
+    for (final td in doc.querySelectorAll('td.gdt2')) {
+      final t = td.text;
+      if (t.contains('pages')) {
+        final m = RegExp(r'\d+').firstMatch(t);
+        if (m != null) maxPage = m.group(0)!;
+        break;
+      }
     }
-  }
 
-  final gid = getGalleryId(galleryUri.toString());
-  if (gid.isEmpty) throw StateError('invalid gallery id');
+    final type = (doc.querySelector('.cs')?.text ?? '').trim();
+    final timeText =
+        (doc.querySelector('div#gdd > table > tbody > tr > td.gdt2')?.text ??
+                '')
+            .trim();
 
-  final id = gid;
-  final directory = _safeId(id);
+    var coverPath = '';
+    final style =
+        doc.querySelector('div#gleft > div#gd1 > div')?.attributes['style'];
+    if (style != null) {
+      final m = RegExp(
+        r'https?://([-a-zA-Z0-9.]+(/\\S*)?\\.(?:jpg|jpeg|gif|png|webp))',
+      ).firstMatch(style);
+      if (m != null) coverPath = m.group(0)!;
+    }
 
-  final comicDir = workDir..createSync(recursive: true);
-  final pagesDir = Directory(p.join(comicDir.path, 'pages'))
-    ..createSync(recursive: true);
+    final tagsMap = <String, List<String>>{};
+    for (final tr in doc.querySelectorAll('div#taglist > table > tbody > tr')) {
+      if (tr.children.length < 2) continue;
+      final key = tr.children[0].text.replaceAll(':', '').trim();
+      final list = <String>[];
+      for (final div in tr.children[1].children) {
+        final a = div.querySelector('a');
+        if (a == null) continue;
+        final v = a.text.trim();
+        if (v.isNotEmpty) list.add(v);
+      }
+      if (key.isNotEmpty) tagsMap[key] = list;
+    }
+    final tagsFlat = <String>[];
+    for (final values in tagsMap.values) {
+      tagsFlat.addAll(values);
+    }
 
-  ctx.setTotal((coverPath.isEmpty ? 0 : 1) + readerLinks.length);
-  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
+    // collect reader links across thumbnail pages
+    final firstLinks = doc.querySelectorAll('div#gdt > a');
+    final perThumbPage = firstLinks.length;
+    if (perThumbPage <= 0) throw StateError('no thumbnail links');
+    final totalPages = int.tryParse(maxPage) ?? 1;
+    final totalThumbPages = (totalPages / perThumbPage).ceil();
 
-  final fileConcurrent = _concurrencyPolicy.fileConcurrent('ehentai');
-  final jobs = <Future<void> Function()>[];
+    final readerLinks = <String>[];
+    for (var pageno = 0; pageno < totalThumbPages; pageno++) {
+      ctx.throwIfStopped();
+      final u = galleryUri.replace(
+        queryParameters: {
+          ...galleryUri.queryParameters,
+          if (pageno > 0) 'p': pageno.toString(),
+        },
+      );
+      final res = await _httpGetBytesWithRetry(
+        u,
+        headers: headersBase,
+        timeout: const Duration(seconds: 25),
+        retries: 2,
+        maxBytes: 12 * 1024 * 1024,
+        stopCheck: ctx.stopCheck,
+        client: httpClient,
+      );
+      final d = html.parse(res.bodyText());
+      for (final a in d.querySelectorAll('div#gdt > a')) {
+        final href = a.attributes['href'];
+        if (href == null || href.trim().isEmpty) continue;
+        readerLinks.add(href);
+      }
+    }
 
-  if (coverPath.isNotEmpty) {
-    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
-    if (!_nonEmptyFileExists(coverFile)) {
+    final gid = getGalleryId(galleryUri.toString());
+    if (gid.isEmpty) throw StateError('invalid gallery id');
+
+    final id = gid;
+    final directory = _safeId(id);
+
+    final comicDir = workDir..createSync(recursive: true);
+    final pagesDir = Directory(p.join(comicDir.path, 'pages'))
+      ..createSync(recursive: true);
+
+    ctx.setTotal((coverPath.isEmpty ? 0 : 1) + readerLinks.length);
+    ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
+
+    final fileConcurrent = _concurrencyPolicy.fileConcurrent('ehentai');
+    final jobs = <Future<void> Function()>[];
+
+    if (coverPath.isNotEmpty) {
+      final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+      if (!_nonEmptyFileExists(coverFile)) {
+        jobs.add(() async {
+          ctx.setMessage('download cover');
+          await _downloadToFile(
+            Uri.parse(coverPath),
+            coverFile,
+            headers: headersBase,
+            timeout: const Duration(minutes: 2),
+            maxBytes: 20 * 1024 * 1024,
+            retries: _retryPolicy.fileRetries('ehentai'),
+            stopCheck: ctx.stopCheck,
+            client: httpClient,
+          );
+          ctx.advance();
+        });
+      }
+    }
+
+    for (var i = 0; i < readerLinks.length; i++) {
+      final idx = i + 1;
+      final link = readerLinks[i];
+      if (_pageFileExists(pagesDir, idx)) continue;
       jobs.add(() async {
-        ctx.setMessage('download cover');
+        ctx.setMessage('fetch page $idx/${readerLinks.length}');
+        final pageRes = await _httpGetBytesWithRetry(
+          Uri.parse(link),
+          headers: {
+            ...headersBase,
+            'referer': galleryUri.toString(),
+          },
+          timeout: const Duration(seconds: 25),
+          retries: 2,
+          maxBytes: 8 * 1024 * 1024,
+          stopCheck: ctx.stopCheck,
+          client: httpClient,
+        );
+        final pageDoc = html.parse(pageRes.bodyText());
+        var imgUrl =
+            pageDoc.querySelector('div#i3 > a > img')?.attributes['src'] ?? '';
+        imgUrl = imgUrl.trim();
+        if (imgUrl.isEmpty) {
+          throw StateError('missing image url');
+        }
+        if (imgUrl.contains('509.gif')) {
+          throw StateError('image limit exceeded');
+        }
+
+        ctx.setMessage('download page $idx/${readerLinks.length}');
+        final uri = Uri.parse(imgUrl);
+        final ext = _guessExtFromUrl(uri, fallback: 'jpg');
         await _downloadToFile(
-          Uri.parse(coverPath),
-          coverFile,
-          headers: headersBase,
-          timeout: const Duration(minutes: 2),
-          maxBytes: 20 * 1024 * 1024,
+          uri,
+          File(p.join(pagesDir.path, '$idx.$ext')),
+          headers: {
+            ...headersBase,
+            'referer': link,
+          },
+          timeout: const Duration(minutes: 5),
+          maxBytes: 80 * 1024 * 1024,
           retries: _retryPolicy.fileRetries('ehentai'),
           stopCheck: ctx.stopCheck,
           client: httpClient,
@@ -1823,105 +1876,55 @@ Future<_DownloadedComicData> _downloadEhentai(
         ctx.advance();
       });
     }
-  }
 
-  for (var i = 0; i < readerLinks.length; i++) {
-    final idx = i + 1;
-    final link = readerLinks[i];
-    if (_pageFileExists(pagesDir, idx)) continue;
-    jobs.add(() async {
-      ctx.setMessage('fetch page $idx/${readerLinks.length}');
-      final pageRes = await _httpGetBytesWithRetry(
-        Uri.parse(link),
-        headers: {
-          ...headersBase,
-          'referer': galleryUri.toString(),
-        },
-        timeout: const Duration(seconds: 25),
-        retries: 2,
-        maxBytes: 8 * 1024 * 1024,
-        stopCheck: ctx.stopCheck,
-        client: httpClient,
-      );
-      final pageDoc = html.parse(pageRes.bodyText());
-      var imgUrl =
-          pageDoc.querySelector('div#i3 > a > img')?.attributes['src'] ?? '';
-      imgUrl = imgUrl.trim();
-      if (imgUrl.isEmpty) {
-        throw StateError('missing image url');
-      }
-      if (imgUrl.contains('509.gif')) {
-        throw StateError('image limit exceeded');
-      }
+    var closed = false;
+    void abort() {
+      if (closed) return;
+      closed = true;
+      httpClient.close(force: true);
+    }
 
-      ctx.setMessage('download page $idx/${readerLinks.length}');
-      final uri = Uri.parse(imgUrl);
-      final ext = _guessExtFromUrl(uri, fallback: 'jpg');
-      await _downloadToFile(
-        uri,
-        File(p.join(pagesDir.path, '$idx.$ext')),
-        headers: {
-          ...headersBase,
-          'referer': link,
-        },
-        timeout: const Duration(minutes: 5),
-        maxBytes: 80 * 1024 * 1024,
-        retries: _retryPolicy.fileRetries('ehentai'),
-        stopCheck: ctx.stopCheck,
-        client: httpClient,
-      );
-      ctx.advance();
-    });
-  }
+    await _forEachConcurrent(
+      jobs,
+      fileConcurrent,
+      (job) => job(),
+      stopCheck: ctx.stopCheck,
+      onError: abort,
+    );
 
-  var closed = false;
-  void abort() {
-    if (closed) return;
-    closed = true;
-    httpClient.close(force: true);
-  }
+    final galleryJson = <String, dynamic>{
+      'title': title.isEmpty ? id : title,
+      'subTitle': subTitle.isEmpty ? null : subTitle,
+      'type': type,
+      'time': timeText,
+      'uploader': uploader,
+      'stars': 0.0,
+      'rating': null,
+      'coverPath': coverPath,
+      'tags': tagsMap,
+      'favorite': false,
+      'link': galleryUri.toString(),
+      'maxPage': maxPage,
+      'pageSize': perThumbPage,
+      'ext': 'jpg',
+      'width': 200,
+      'auth': <String, String>{},
+    };
 
-  await _forEachConcurrent(
-    jobs,
-    fileConcurrent,
-    (job) => job(),
-    stopCheck: ctx.stopCheck,
-    onError: abort,
-  );
+    final downloadedJson = <String, dynamic>{
+      'gallery': galleryJson,
+      'size': null,
+    };
 
-  final galleryJson = <String, dynamic>{
-    'title': title.isEmpty ? id : title,
-    'subTitle': subTitle.isEmpty ? null : subTitle,
-    'type': type,
-    'time': timeText,
-    'uploader': uploader,
-    'stars': 0.0,
-    'rating': null,
-    'coverPath': coverPath,
-    'tags': tagsMap,
-    'favorite': false,
-    'link': galleryUri.toString(),
-    'maxPage': maxPage,
-    'pageSize': perThumbPage,
-    'ext': 'jpg',
-    'width': 200,
-    'auth': <String, String>{},
-  };
-
-  final downloadedJson = <String, dynamic>{
-    'gallery': galleryJson,
-    'size': null,
-  };
-
-  return _DownloadedComicData(
-    id: id,
-    title: galleryJson['title'] as String,
-    subtitle: uploader,
-    type: 1,
-    tags: tagsFlat,
-    directory: directory,
-    downloadedJson: downloadedJson,
-  );
+    return _DownloadedComicData(
+      id: id,
+      title: galleryJson['title'] as String,
+      subtitle: uploader,
+      type: 1,
+      tags: tagsFlat,
+      directory: directory,
+      downloadedJson: downloadedJson,
+    );
   } finally {
     httpClient.close(force: true);
   }
@@ -1958,472 +1961,476 @@ Future<_DownloadedComicData> _downloadJm(
 
   final httpClient = HttpClient();
   try {
-  Map<String, String> baseHeaders(int time, {bool post = false}) {
-    final token = md5.convert(utf8.encode('$time$jmAuthKey')).toString();
-    return {
-      'accept': '*/*',
-      // Dart HttpClient does not support brotli/zstd auto-decompression.
-      // Advertising them may yield compressed bodies that can't be parsed.
-      'accept-encoding': 'gzip',
-      'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-      'connection': 'keep-alive',
-      'origin': 'https://localhost',
-      'referer': 'https://localhost/',
-      'sec-fetch-dest': 'empty',
-      'sec-fetch-mode': 'cors',
-      'sec-fetch-site': 'cross-site',
-      'x-requested-with': 'com.example.app',
-      'authorization': 'Bearer',
-      'sec-fetch-storage-access': 'active',
-      'token': token,
-      'tokenparam': '$time,$appVersion',
-      'user-agent': ua,
-      if (post) 'content-type': 'application/x-www-form-urlencoded',
-    };
-  }
+    Map<String, String> baseHeaders(int time, {bool post = false}) {
+      final token = md5.convert(utf8.encode('$time$jmAuthKey')).toString();
+      return {
+        'accept': '*/*',
+        // Dart HttpClient does not support brotli/zstd auto-decompression.
+        // Advertising them may yield compressed bodies that can't be parsed.
+        'accept-encoding': 'gzip',
+        'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+        'connection': 'keep-alive',
+        'origin': 'https://localhost',
+        'referer': 'https://localhost/',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'cross-site',
+        'x-requested-with': 'com.example.app',
+        'authorization': 'Bearer',
+        'sec-fetch-storage-access': 'active',
+        'token': token,
+        'tokenparam': '$time,$appVersion',
+        'user-agent': ua,
+        if (post) 'content-type': 'application/x-www-form-urlencoded',
+      };
+    }
 
-  String convertData(String input, String secret) {
-    final key = md5.convert(utf8.encode(secret)).toString();
-    final data = base64Decode(input);
-    if (data.isEmpty) return '';
-    String stripTail(String s) {
-      var i = s.length - 1;
-      for (; i >= 0; i--) {
-        final ch = s[i];
-        if (ch == '}' || ch == ']') break;
+    String convertData(String input, String secret) {
+      final key = md5.convert(utf8.encode(secret)).toString();
+      final data = base64Decode(input);
+      if (data.isEmpty) return '';
+      String stripTail(String s) {
+        var i = s.length - 1;
+        for (; i >= 0; i--) {
+          final ch = s[i];
+          if (ch == '}' || ch == ']') break;
+        }
+        return s.substring(0, i + 1);
       }
-      return s.substring(0, i + 1);
-    }
-    if (data.length % 16 != 0) {
-      return stripTail(utf8.decode(data, allowMalformed: true));
-    }
-    final cipher = ECBBlockCipher(AESEngine())
-      ..init(false, KeyParameter(utf8.encode(key)));
-    var offset = 0;
-    final out = Uint8List(data.length);
-    try {
-      while (offset < data.length) {
-        offset += cipher.processBlock(data, offset, out, offset);
+
+      if (data.length % 16 != 0) {
+        return stripTail(utf8.decode(data, allowMalformed: true));
       }
-      return stripTail(utf8.decode(out, allowMalformed: true));
-    } on RangeError {
-      return stripTail(utf8.decode(data, allowMalformed: true));
-    }
-  }
-
-  Future<Map<String, dynamic>> jmGet(String pathQuery) async {
-    final uri = pathQuery.startsWith('http')
-        ? Uri.parse(pathQuery)
-        : Uri.parse('$apiBaseUrl$pathQuery');
-
-    Object? lastErr;
-    const retries = 2;
-    for (var attempt = 0; attempt <= retries; attempt++) {
-      final time = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      final cipher = ECBBlockCipher(AESEngine())
+        ..init(false, KeyParameter(utf8.encode(key)));
+      var offset = 0;
+      final out = Uint8List(data.length);
       try {
-        final res = await _httpGetBytes(
-          uri,
-          headers: baseHeaders(time),
-          timeout: const Duration(seconds: 20),
-          maxBytes: 12 * 1024 * 1024,
-          stopCheck: ctx.stopCheck,
-          client: httpClient,
-        );
-
-        if (res.statusCode == 401) {
-          final body = res.bodyText();
-          Object? decoded;
-          try {
-            decoded = jsonDecode(body);
-          } catch (_) {
-            decoded = null;
-          }
-          final msg = decoded is Map
-              ? (decoded['errorMsg'] ?? 'unauthorized').toString().trim()
-              : _snippet(body);
-          throw _NoRetry(
-            StateError(
-              msg.isEmpty ? 'unauthorized @ ${res.uri}' : 'unauthorized @ ${res.uri}: $msg',
-            ),
-          );
+        while (offset < data.length) {
+          offset += cipher.processBlock(data, offset, out, offset);
         }
-
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          final err = HttpException('bad status: ${res.statusCode}', uri: uri);
-          if (!_isRetryableStatus(res.statusCode) || attempt == retries) {
-            throw _NoRetry(err);
-          }
-          await Future.delayed(Duration(milliseconds: 300 * (1 << attempt)));
-          continue;
-        }
-
-        final outerBody = res.bodyText();
-        Object? outerAny;
-        try {
-          outerAny = jsonDecode(outerBody);
-        } catch (e) {
-          final head = _snippet(outerBody);
-          throw StateError(
-            head.isEmpty
-                ? 'jm api returned non-json (${res.statusCode}) @ ${res.uri}: $e'
-                : 'jm api returned non-json (${res.statusCode}) @ ${res.uri}: $head',
-          );
-        }
-        if (outerAny is! Map) throw StateError('invalid response');
-        final outer = Map<String, dynamic>.from(outerAny);
-
-        final dataField = outer['data'];
-        if (dataField is List && dataField.isEmpty) {
-          throw StateError('empty data');
-        }
-        if (dataField is! String) {
-          throw StateError('missing data');
-        }
-
-        final decoded = convertData(dataField, '$time$jmSecret');
-        Object? innerAny;
-        try {
-          innerAny = jsonDecode(decoded);
-        } catch (_) {
-          final head = _snippet(decoded);
-          throw StateError(
-            head.isEmpty ? 'invalid data' : 'invalid data: $head',
-          );
-        }
-        if (innerAny is! Map) throw StateError('invalid data');
-        return Map<String, dynamic>.from(innerAny);
-      } catch (e) {
-        if (e is _NoRetry) throw e.error;
-        lastErr = e;
-        if (attempt == retries) break;
-        await Future.delayed(Duration(milliseconds: 300 * (1 << attempt)));
+        return stripTail(utf8.decode(out, allowMalformed: true));
+      } on RangeError {
+        return stripTail(utf8.decode(data, allowMalformed: true));
       }
     }
 
-    throw lastErr ?? Exception('request failed');
-  }
+    Future<Map<String, dynamic>> jmGet(String pathQuery) async {
+      final uri = pathQuery.startsWith('http')
+          ? Uri.parse(pathQuery)
+          : Uri.parse('$apiBaseUrl$pathQuery');
 
-  int segmentationNum(String epsId, String scrambleID, String pictureName) {
-    final scramble = int.tryParse(scrambleID) ?? 0;
-    final eps = int.tryParse(epsId) ?? 0;
-    if (eps < scramble) return 0;
-    if (eps < 268850) return 10;
-    final str = '$eps$pictureName';
-    final hash = md5.convert(utf8.encode(str)).toString();
-    final charCode = hash.codeUnitAt(hash.length - 1);
-    if (eps > 421926) {
-      final remainder = charCode % 8;
+      Object? lastErr;
+      const retries = 2;
+      for (var attempt = 0; attempt <= retries; attempt++) {
+        final time = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        try {
+          final res = await _httpGetBytes(
+            uri,
+            headers: baseHeaders(time),
+            timeout: const Duration(seconds: 20),
+            maxBytes: 12 * 1024 * 1024,
+            stopCheck: ctx.stopCheck,
+            client: httpClient,
+          );
+
+          if (res.statusCode == 401) {
+            final body = res.bodyText();
+            Object? decoded;
+            try {
+              decoded = jsonDecode(body);
+            } catch (_) {
+              decoded = null;
+            }
+            final msg = decoded is Map
+                ? (decoded['errorMsg'] ?? 'unauthorized').toString().trim()
+                : _snippet(body);
+            throw _NoRetry(
+              StateError(
+                msg.isEmpty
+                    ? 'unauthorized @ ${res.uri}'
+                    : 'unauthorized @ ${res.uri}: $msg',
+              ),
+            );
+          }
+
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            final err =
+                HttpException('bad status: ${res.statusCode}', uri: uri);
+            if (!_isRetryableStatus(res.statusCode) || attempt == retries) {
+              throw _NoRetry(err);
+            }
+            await Future.delayed(Duration(milliseconds: 300 * (1 << attempt)));
+            continue;
+          }
+
+          final outerBody = res.bodyText();
+          Object? outerAny;
+          try {
+            outerAny = jsonDecode(outerBody);
+          } catch (e) {
+            final head = _snippet(outerBody);
+            throw StateError(
+              head.isEmpty
+                  ? 'jm api returned non-json (${res.statusCode}) @ ${res.uri}: $e'
+                  : 'jm api returned non-json (${res.statusCode}) @ ${res.uri}: $head',
+            );
+          }
+          if (outerAny is! Map) throw StateError('invalid response');
+          final outer = Map<String, dynamic>.from(outerAny);
+
+          final dataField = outer['data'];
+          if (dataField is List && dataField.isEmpty) {
+            throw StateError('empty data');
+          }
+          if (dataField is! String) {
+            throw StateError('missing data');
+          }
+
+          final decoded = convertData(dataField, '$time$jmSecret');
+          Object? innerAny;
+          try {
+            innerAny = jsonDecode(decoded);
+          } catch (_) {
+            final head = _snippet(decoded);
+            throw StateError(
+              head.isEmpty ? 'invalid data' : 'invalid data: $head',
+            );
+          }
+          if (innerAny is! Map) throw StateError('invalid data');
+          return Map<String, dynamic>.from(innerAny);
+        } catch (e) {
+          if (e is _NoRetry) throw e.error;
+          lastErr = e;
+          if (attempt == retries) break;
+          await Future.delayed(Duration(milliseconds: 300 * (1 << attempt)));
+        }
+      }
+
+      throw lastErr ?? Exception('request failed');
+    }
+
+    int segmentationNum(String epsId, String scrambleID, String pictureName) {
+      final scramble = int.tryParse(scrambleID) ?? 0;
+      final eps = int.tryParse(epsId) ?? 0;
+      if (eps < scramble) return 0;
+      if (eps < 268850) return 10;
+      final str = '$eps$pictureName';
+      final hash = md5.convert(utf8.encode(str)).toString();
+      final charCode = hash.codeUnitAt(hash.length - 1);
+      if (eps > 421926) {
+        final remainder = charCode % 8;
+        return remainder * 2 + 2;
+      }
+      final remainder = charCode % 10;
       return remainder * 2 + 2;
     }
-    final remainder = charCode % 10;
-    return remainder * 2 + 2;
-  }
 
-  Uint8List recombineJm(Uint8List data, String epsId, String pictureName) {
-    final num = segmentationNum(epsId, scrambleId, pictureName);
-    if (num <= 1) return data;
-    final src = img.decodeImage(data);
-    if (src == null) {
-      throw StateError('failed to decode image');
-    }
-    final blockSize = (src.height / num).floor();
-    final remainder = src.height % num;
-    final blocks = <({int start, int end})>[];
-    for (var i = 0; i < num; i++) {
-      final start = i * blockSize;
-      final end = start + blockSize + (i != num - 1 ? 0 : remainder);
-      blocks.add((start: start, end: end));
-    }
-    final dst = img.Image(width: src.width, height: src.height);
-    var y = 0;
-    for (var i = blocks.length - 1; i >= 0; i--) {
-      final b = blocks[i];
-      final h = b.end - b.start;
-      for (var yy = 0; yy < h; yy++) {
-        for (var x = 0; x < src.width; x++) {
-          final pixel = src.getPixel(x, b.start + yy);
-          dst.setPixel(x, y + yy, pixel);
-        }
+    Uint8List recombineJm(Uint8List data, String epsId, String pictureName) {
+      final num = segmentationNum(epsId, scrambleId, pictureName);
+      if (num <= 1) return data;
+      final src = img.decodeImage(data);
+      if (src == null) {
+        throw StateError('failed to decode image');
       }
-      y += h;
+      final blockSize = (src.height / num).floor();
+      final remainder = src.height % num;
+      final blocks = <({int start, int end})>[];
+      for (var i = 0; i < num; i++) {
+        final start = i * blockSize;
+        final end = start + blockSize + (i != num - 1 ? 0 : remainder);
+        blocks.add((start: start, end: end));
+      }
+      final dst = img.Image(width: src.width, height: src.height);
+      var y = 0;
+      for (var i = blocks.length - 1; i >= 0; i--) {
+        final b = blocks[i];
+        final h = b.end - b.start;
+        for (var yy = 0; yy < h; yy++) {
+          for (var x = 0; x < src.width; x++) {
+            final pixel = src.getPixel(x, b.start + yy);
+            dst.setPixel(x, y + yy, pixel);
+          }
+        }
+        y += h;
+      }
+      return Uint8List.fromList(img.encodeJpg(dst));
     }
-    return Uint8List.fromList(img.encodeJpg(dst));
-  }
 
-  ctx.setMessage('fetch comic info');
-  final album = await jmGet('/album?id=$rawId');
+    ctx.setMessage('fetch comic info');
+    final album = await jmGet('/album?id=$rawId');
 
-  final author = <String>[];
-  final authorRaw = album['author'];
-  if (authorRaw is List) {
-    for (final a in authorRaw) {
-      final s = a.toString().trim();
+    final author = <String>[];
+    final authorRaw = album['author'];
+    if (authorRaw is List) {
+      for (final a in authorRaw) {
+        final s = a.toString().trim();
+        if (s.isNotEmpty) author.add(s);
+      }
+    } else if (authorRaw != null) {
+      final s = authorRaw.toString().trim();
       if (s.isNotEmpty) author.add(s);
     }
-  } else if (authorRaw != null) {
-    final s = authorRaw.toString().trim();
-    if (s.isNotEmpty) author.add(s);
-  }
-  if (author.isEmpty) author.add('未知');
+    if (author.isEmpty) author.add('未知');
 
-  final series = <int, String>{};
-  final epNames = <String>[];
-  final seriesRaw = album['series'];
-  if (seriesRaw is List) {
-    var sort = 1;
-    for (final s in seriesRaw) {
-      if (s is! Map) continue;
-      final cid = (s['id'] ?? '').toString().trim();
-      if (cid.isEmpty) continue;
-      series[sort] = cid;
-      var name = (s['name'] ?? '').toString();
-      if (name.trim().isEmpty) {
-        final sortName = (s['sort'] ?? sort).toString();
-        name = '第${sortName}話';
-      }
-      epNames.add(name);
-      sort++;
-    }
-  }
-  if (series.isEmpty) {
-    series[1] = rawId;
-    epNames.add('第1章');
-  }
-
-  final tags = <String>[];
-  final tagsRaw = album['tags'];
-  if (tagsRaw is List) {
-    for (final t in tagsRaw) {
-      final s = t.toString().trim();
-      if (s.isNotEmpty) tags.add(s);
-    }
-  }
-
-  final works = <String>[];
-  final worksRaw = album['works'];
-  if (worksRaw is List) {
-    for (final w in worksRaw) {
-      final s = w.toString().trim();
-      if (s.isNotEmpty) works.add(s);
-    }
-  }
-
-  final actors = <String>[];
-  final actorsRaw = album['actors'];
-  if (actorsRaw is List) {
-    for (final a in actorsRaw) {
-      final s = a.toString().trim();
-      if (s.isNotEmpty) actors.add(s);
-    }
-  }
-
-  final title = (album['name'] ?? '').toString().trim();
-  final description = (album['description'] ?? '').toString();
-
-  final epsRaw = params['eps'];
-  final selected = <int>[];
-  if (epsRaw is List) {
-    for (final e in epsRaw) {
-      final v = int.tryParse(e.toString());
-      if (v == null) continue;
-      if (v < 0) continue;
-      selected.add(v);
-    }
-  }
-  if (selected.isEmpty) {
-    selected.addAll(List<int>.generate(series.length, (i) => i));
-  }
-
-  final seriesJson = <String, String>{};
-  for (final e in series.entries) {
-    seriesJson[e.key.toString()] = e.value;
-  }
-
-  final jmComicJson = <String, dynamic>{
-    'name': title.isEmpty ? id : title,
-    'id': rawId,
-    'author': author,
-    'description': description,
-    'likes': '',
-    'views': '',
-    'series': seriesJson,
-    'tags': tags,
-    'works': works,
-    'actors': actors,
-    'relatedComics': [],
-    'liked': '',
-    'favorite': '',
-    'epNames': epNames,
-  };
-
-  final downloadedJson = <String, dynamic>{
-    'comic': jmComicJson,
-    'size': null,
-    'downloadedChapters': selected,
-  };
-
-  final comicDir = workDir..createSync(recursive: true);
-  final pagesRoot = Directory(p.join(comicDir.path, 'pages'))
-    ..createSync(recursive: true);
-
-  // cover
-  final coverUrl = '$imgBaseUrl/media/albums/${rawId}_3x4.jpg';
-  ctx.setMessage('download cover');
-  ctx.setTotal(1);
-  final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
-  if (!_nonEmptyFileExists(coverFile)) {
-    ctx.throwIfStopped();
-    await _downloadToFile(
-      Uri.parse(coverUrl),
-      coverFile,
-      headers: {'user-agent': ua, 'referer': 'https://localhost/'},
-      timeout: const Duration(minutes: 2),
-      maxBytes: 20 * 1024 * 1024,
-      retries: _retryPolicy.fileRetries('jm'),
-      stopCheck: ctx.stopCheck,
-      client: httpClient,
-    );
-    ctx.advance();
-  }
-
-  // pages
-  final selectedKeys = series.keys.toList()..sort();
-  final chaptersToDownload = <int, String>{};
-  for (final k in selectedKeys) {
-    if (!selected.contains(k - 1)) continue;
-    final cid = series[k];
-    if (cid != null) chaptersToDownload[k] = cid;
-  }
-
-  // pre-fetch image lists for total
-  ctx.setMessage('fetch chapters');
-  final chapterImages = <int, List<String>>{};
-  var totalPages = 0;
-  for (final e in chaptersToDownload.entries) {
-    ctx.throwIfStopped();
-    final chapterId = e.value;
-    final data = await jmGet('/chapter?&id=$chapterId');
-    final images = <String>[];
-    final imgs = data['images'];
-    if (imgs is List) {
-      for (final s in imgs) {
-        final name = s.toString().trim();
-        if (name.isEmpty) continue;
-        images.add('$imgBaseUrl/media/photos/$chapterId/$name');
-      }
-    }
-    chapterImages[e.key] = images;
-    totalPages += images.length;
-  }
-  ctx.setTotal(1 + totalPages);
-  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
-
-  final fileConcurrent = _concurrencyPolicy.fileConcurrent('jm');
-  final jobs = <Future<void> Function()>[];
-
-  for (final entry in chapterImages.entries) {
-    final epNo = entry.key;
-    final chapterId = chaptersToDownload[epNo] ?? '';
-    final urls = entry.value;
-    final epDir = Directory(p.join(pagesRoot.path, epNo.toString()));
-    epDir.createSync(recursive: true);
-
-    for (var i = 0; i < urls.length; i++) {
-      final pageNo = i + 1;
-      if (_pageFileExists(epDir, pageNo)) continue;
-      final u = urls[i];
-      jobs.add(() async {
-        ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
-        final uri = Uri.parse(u);
-        final imageName =
-            uri.pathSegments.isNotEmpty ? uri.pathSegments.last : '';
-        final pictureName = imageName.contains('.')
-            ? imageName.substring(0, imageName.lastIndexOf('.'))
-            : imageName;
-        final ext = _guessExtFromUrl(uri);
-
-        final bytesRes = await _httpGetBytesWithRetry(
-          uri,
-          headers: {
-            'user-agent': imgUa,
-            'referer': 'https://localhost/',
-            'accept':
-                'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-            // Same as api: don't advertise brotli/zstd to Dart HttpClient.
-            'accept-encoding': 'gzip',
-            'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-            'x-requested-with': 'com.example.app',
-          },
-          timeout: const Duration(minutes: 2),
-          retries: 2,
-          maxBytes: 80 * 1024 * 1024,
-          stopCheck: ctx.stopCheck,
-          client: httpClient,
-        );
-
-        Uint8List outBytes = bytesRes.body;
-        String outExt = ext;
-        if (ext != 'gif') {
-          final debug = Platform.environment['PICA_TASK_DEBUG'] == '1';
-          final ct = (bytesRes.contentType ?? '').toLowerCase();
-          if (ct.isNotEmpty && !ct.startsWith('image/')) {
-            final preview = debug
-                ? '\n${utf8.decode(outBytes.take(300).toList(), allowMalformed: true)}'
-                : '';
-            throw StateError('jm image not image: $ct ($uri)$preview');
-          }
-          try {
-            outBytes = recombineJm(outBytes, chapterId, pictureName);
-          } catch (e) {
-            final hex = outBytes.isEmpty
-                ? ''
-                : outBytes
-                    .take(16)
-                    .map((b) => b.toRadixString(16).padLeft(2, '0'))
-                    .join(' ');
-            final preview = debug
-                ? '\ncontent-type: ${bytesRes.contentType}\nlen: ${outBytes.length}\nhex: $hex'
-                : '';
-            throw StateError('jm recombine failed: $e ($uri)$preview');
-          }
-          outExt = 'jpg';
+    final series = <int, String>{};
+    final epNames = <String>[];
+    final seriesRaw = album['series'];
+    if (seriesRaw is List) {
+      var sort = 1;
+      for (final s in seriesRaw) {
+        if (s is! Map) continue;
+        final cid = (s['id'] ?? '').toString().trim();
+        if (cid.isEmpty) continue;
+        series[sort] = cid;
+        var name = (s['name'] ?? '').toString();
+        if (name.trim().isEmpty) {
+          final sortName = (s['sort'] ?? sort).toString();
+          name = '第${sortName}話';
         }
-
-        final outPath = p.join(epDir.path, '$pageNo.$outExt');
-        final outFile = File(outPath);
-        if (_pageFileExists(epDir, pageNo)) return;
-        if (outFile.existsSync()) outFile.deleteSync();
-        outFile.createSync(recursive: true);
-        outFile.writeAsBytesSync(outBytes);
-        ctx.advance();
-      });
+        epNames.add(name);
+        sort++;
+      }
     }
-  }
+    if (series.isEmpty) {
+      series[1] = rawId;
+      epNames.add('第1章');
+    }
 
-  var closed = false;
-  void abort() {
-    if (closed) return;
-    closed = true;
-    httpClient.close(force: true);
-  }
+    final tags = <String>[];
+    final tagsRaw = album['tags'];
+    if (tagsRaw is List) {
+      for (final t in tagsRaw) {
+        final s = t.toString().trim();
+        if (s.isNotEmpty) tags.add(s);
+      }
+    }
 
-  await _forEachConcurrent(
-    jobs,
-    fileConcurrent,
-    (job) => job(),
-    stopCheck: ctx.stopCheck,
-    onError: abort,
-  );
+    final works = <String>[];
+    final worksRaw = album['works'];
+    if (worksRaw is List) {
+      for (final w in worksRaw) {
+        final s = w.toString().trim();
+        if (s.isNotEmpty) works.add(s);
+      }
+    }
 
-  return _DownloadedComicData(
-    id: id,
-    title: jmComicJson['name'] as String,
-    subtitle: author.first,
-    type: 2,
-    tags: tags,
-    directory: directory,
-    downloadedJson: downloadedJson,
-  );
+    final actors = <String>[];
+    final actorsRaw = album['actors'];
+    if (actorsRaw is List) {
+      for (final a in actorsRaw) {
+        final s = a.toString().trim();
+        if (s.isNotEmpty) actors.add(s);
+      }
+    }
+
+    final title = (album['name'] ?? '').toString().trim();
+    final description = (album['description'] ?? '').toString();
+
+    final epsRaw = params['eps'];
+    final selected = <int>[];
+    if (epsRaw is List) {
+      for (final e in epsRaw) {
+        final v = int.tryParse(e.toString());
+        if (v == null) continue;
+        if (v < 0) continue;
+        selected.add(v);
+      }
+    }
+    if (selected.isEmpty) {
+      selected.addAll(List<int>.generate(series.length, (i) => i));
+    }
+
+    final seriesJson = <String, String>{};
+    for (final e in series.entries) {
+      seriesJson[e.key.toString()] = e.value;
+    }
+
+    final jmComicJson = <String, dynamic>{
+      'name': title.isEmpty ? id : title,
+      'id': rawId,
+      'author': author,
+      'description': description,
+      'likes': '',
+      'views': '',
+      'series': seriesJson,
+      'tags': tags,
+      'works': works,
+      'actors': actors,
+      'relatedComics': [],
+      'liked': '',
+      'favorite': '',
+      'epNames': epNames,
+    };
+
+    final downloadedJson = <String, dynamic>{
+      'comic': jmComicJson,
+      'size': null,
+      'downloadedChapters': selected,
+    };
+
+    final comicDir = workDir..createSync(recursive: true);
+    final pagesRoot = Directory(p.join(comicDir.path, 'pages'))
+      ..createSync(recursive: true);
+
+    // cover
+    final coverUrl = '$imgBaseUrl/media/albums/${rawId}_3x4.jpg';
+    ctx.setMessage('download cover');
+    ctx.setTotal(1);
+    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+    if (!_nonEmptyFileExists(coverFile)) {
+      ctx.throwIfStopped();
+      await _downloadToFile(
+        Uri.parse(coverUrl),
+        coverFile,
+        headers: {'user-agent': ua, 'referer': 'https://localhost/'},
+        timeout: const Duration(minutes: 2),
+        maxBytes: 20 * 1024 * 1024,
+        retries: _retryPolicy.fileRetries('jm'),
+        stopCheck: ctx.stopCheck,
+        client: httpClient,
+      );
+      ctx.advance();
+    }
+
+    // pages
+    final selectedKeys = series.keys.toList()..sort();
+    final chaptersToDownload = <int, String>{};
+    for (final k in selectedKeys) {
+      if (!selected.contains(k - 1)) continue;
+      final cid = series[k];
+      if (cid != null) chaptersToDownload[k] = cid;
+    }
+
+    // pre-fetch image lists for total
+    ctx.setMessage('fetch chapters');
+    final chapterImages = <int, List<String>>{};
+    var totalPages = 0;
+    for (final e in chaptersToDownload.entries) {
+      ctx.throwIfStopped();
+      final chapterId = e.value;
+      final data = await jmGet('/chapter?&id=$chapterId');
+      final images = <String>[];
+      final imgs = data['images'];
+      if (imgs is List) {
+        for (final s in imgs) {
+          final name = s.toString().trim();
+          if (name.isEmpty) continue;
+          images.add('$imgBaseUrl/media/photos/$chapterId/$name');
+        }
+      }
+      chapterImages[e.key] = images;
+      totalPages += images.length;
+    }
+    ctx.setTotal(1 + totalPages);
+    ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
+
+    final fileConcurrent = _concurrencyPolicy.fileConcurrent('jm');
+    final jobs = <Future<void> Function()>[];
+
+    for (final entry in chapterImages.entries) {
+      final epNo = entry.key;
+      final chapterId = chaptersToDownload[epNo] ?? '';
+      final urls = entry.value;
+      final epDir = Directory(p.join(pagesRoot.path, epNo.toString()));
+      epDir.createSync(recursive: true);
+
+      for (var i = 0; i < urls.length; i++) {
+        final pageNo = i + 1;
+        if (_pageFileExists(epDir, pageNo)) continue;
+        final u = urls[i];
+        jobs.add(() async {
+          ctx.setMessage('download ep $epNo ($pageNo/${urls.length})');
+          final uri = Uri.parse(u);
+          final imageName =
+              uri.pathSegments.isNotEmpty ? uri.pathSegments.last : '';
+          final pictureName = imageName.contains('.')
+              ? imageName.substring(0, imageName.lastIndexOf('.'))
+              : imageName;
+          final ext = _guessExtFromUrl(uri);
+
+          final bytesRes = await _httpGetBytesWithRetry(
+            uri,
+            headers: {
+              'user-agent': imgUa,
+              'referer': 'https://localhost/',
+              'accept':
+                  'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+              // Same as api: don't advertise brotli/zstd to Dart HttpClient.
+              'accept-encoding': 'gzip',
+              'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+              'x-requested-with': 'com.example.app',
+            },
+            timeout: const Duration(minutes: 2),
+            retries: 2,
+            maxBytes: 80 * 1024 * 1024,
+            stopCheck: ctx.stopCheck,
+            client: httpClient,
+          );
+
+          Uint8List outBytes = bytesRes.body;
+          String outExt = ext;
+          if (ext != 'gif') {
+            final debug = Platform.environment['PICA_TASK_DEBUG'] == '1';
+            final ct = (bytesRes.contentType ?? '').toLowerCase();
+            if (ct.isNotEmpty && !ct.startsWith('image/')) {
+              final preview = debug
+                  ? '\n${utf8.decode(outBytes.take(300).toList(), allowMalformed: true)}'
+                  : '';
+              throw StateError('jm image not image: $ct ($uri)$preview');
+            }
+            try {
+              outBytes = recombineJm(outBytes, chapterId, pictureName);
+            } catch (e) {
+              final hex = outBytes.isEmpty
+                  ? ''
+                  : outBytes
+                      .take(16)
+                      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+                      .join(' ');
+              final preview = debug
+                  ? '\ncontent-type: ${bytesRes.contentType}\nlen: ${outBytes.length}\nhex: $hex'
+                  : '';
+              throw StateError('jm recombine failed: $e ($uri)$preview');
+            }
+            outExt = 'jpg';
+          }
+
+          final outPath = p.join(epDir.path, '$pageNo.$outExt');
+          final outFile = File(outPath);
+          if (_pageFileExists(epDir, pageNo)) return;
+          if (outFile.existsSync()) outFile.deleteSync();
+          outFile.createSync(recursive: true);
+          outFile.writeAsBytesSync(outBytes);
+          ctx.advance();
+        });
+      }
+    }
+
+    var closed = false;
+    void abort() {
+      if (closed) return;
+      closed = true;
+      httpClient.close(force: true);
+    }
+
+    await _forEachConcurrent(
+      jobs,
+      fileConcurrent,
+      (job) => job(),
+      stopCheck: ctx.stopCheck,
+      onError: abort,
+    );
+
+    return _DownloadedComicData(
+      id: id,
+      title: jmComicJson['name'] as String,
+      subtitle: author.first,
+      type: 2,
+      tags: tags,
+      directory: directory,
+      downloadedJson: downloadedJson,
+    );
   } finally {
     httpClient.close(force: true);
   }
@@ -2456,283 +2463,283 @@ Future<_DownloadedComicData> _downloadHitomi(
 
   final httpClient = HttpClient();
   try {
-  Future<_HttpRes> getText(String url) {
-    return _httpGetBytesWithRetry(
-      Uri.parse(url),
-      headers: headers,
-      timeout: const Duration(seconds: 20),
-      retries: 2,
-      maxBytes: 12 * 1024 * 1024,
-      stopCheck: ctx.stopCheck,
-      client: httpClient,
-    );
-  }
-
-  ctx.setMessage('fetch gallery js');
-  final galleryJsRes =
-      await getText('https://ltn.$baseDomain/galleries/$rawId.js');
-  final js = galleryJsRes.bodyText();
-  final start = js.indexOf('{');
-  if (start < 0) throw StateError('invalid galleries js');
-  final galleryJson = jsonDecode(js.substring(start));
-  if (galleryJson is! Map) throw StateError('invalid galleries json');
-
-  ctx.setMessage('fetch cover');
-  final blockRes =
-      await getText('https://ltn.$baseDomain/galleryblock/$rawId.html');
-  final blockDoc = html.parse(blockRes.bodyText());
-  String cover = '';
-  try {
-    final source = blockDoc
-            .querySelector('div.dj-img1 > picture > source')
-            ?.attributes['data-srcset'] ??
-        blockDoc
-            .querySelector('div.cg-img1 > picture > source')
-            ?.attributes['data-srcset'] ??
-        '';
-    if (source.isNotEmpty) {
-      var v = source;
-      if (v.startsWith('//')) v = v.substring(2);
-      v = v.substring(v.indexOf('/'));
-      cover = 'https://atn.$baseDomain$v';
-      cover = cover.replaceAll(RegExp(r'2x.*'), '').trim();
-      cover = cover.replaceFirst('avifbigtn', 'webpbigtn');
-      cover = cover.replaceFirst('.avif', '.webp');
-    }
-  } catch (_) {
-    cover = '';
-  }
-
-  final title = (galleryJson['title'] ?? '').toString().trim();
-  final type = (galleryJson['type'] ?? '').toString().trim();
-  final lang = (galleryJson['language'] ?? '').toString().trim();
-  final time = (galleryJson['date'] ?? '').toString().trim();
-
-  final artists = <String>[];
-  final artistsRaw = galleryJson['artists'];
-  if (artistsRaw is List) {
-    for (final a in artistsRaw) {
-      if (a is Map && a['artist'] != null) {
-        artists.add(a['artist'].toString());
-      } else {
-        final s = a.toString().trim();
-        if (s.isNotEmpty) artists.add(s);
-      }
-    }
-  }
-
-  final files = <Map<String, dynamic>>[];
-  final filesRaw = galleryJson['files'];
-  if (filesRaw is List) {
-    for (final f in filesRaw) {
-      if (f is! Map) continue;
-      files.add({
-        'name': (f['name'] ?? '').toString(),
-        'hash': (f['hash'] ?? '').toString(),
-        'hasWebp': (f['haswebp'] == 1) || (f['haswebp'] == true),
-        'hasAvif': (f['hasavif'] == 1) || (f['hasavif'] == true),
-        'height': int.tryParse((f['height'] ?? '').toString()) ?? 0,
-        'width': int.tryParse((f['width'] ?? '').toString()) ?? 0,
-        'galleryId': rawId,
-      });
-    }
-  }
-
-  // GG.js parsing + url builder (ported from app)
-  var ggCacheTime = DateTime.fromMillisecondsSinceEpoch(0);
-  String? ggB;
-  var ggNumbers = <String>[];
-  var ggInitialG = 1;
-
-  int mm(int g) {
-    if (ggNumbers.contains(g.toString())) {
-      return ~ggInitialG & 1;
-    }
-    return ggInitialG;
-  }
-
-  String s(String h) {
-    final match = RegExp(r'(..)(.)$').firstMatch(h);
-    if (match == null) return '';
-    final g = int.parse(match.group(2)! + match.group(1)!, radix: 16);
-    return g.toString();
-  }
-
-  Future<void> ensureGg() async {
-    final now = DateTime.now();
-    if (now.difference(ggCacheTime).inMinutes < 1 &&
-        ggB != null &&
-        ggNumbers.isNotEmpty) {
-      return;
-    }
-    final res = await getText(
-      'https://ltn.$baseDomain/gg.js?_=${DateTime.now().millisecondsSinceEpoch}',
-    );
-    final text = res.bodyText();
-    final nums = RegExp(r'(?<=case )\d+').allMatches(text);
-    ggNumbers = nums.map((m) => m.group(0)!).toList();
-    ggB = RegExp(r"(?<=b: ')\d+").firstMatch(text)?.group(0);
-    ggInitialG = int.tryParse(
-            RegExp(r'(?<=var o = )\d+').firstMatch(text)?.group(0) ?? '1') ??
-        1;
-    ggCacheTime = now;
-  }
-
-  String subdomainFromUrl(String url, String? base) {
-    var retval = base ?? 'b';
-    final m = RegExp(r'/[0-9a-f]{61}([0-9a-f]{2})([0-9a-f])').firstMatch(url);
-    if (m == null) return 'a';
-    final g = int.parse(m[2]! + m[1]!, radix: 16);
-    final ch = String.fromCharCode(97 + mm(g));
-    if (retval == 'tn') return '$ch$retval';
-    if (retval == 'w') {
-      if (ch == 'a') return '${retval}1';
-      if (ch == 'b') return '${retval}2';
-    }
-    return retval;
-  }
-
-  String realFullPathFromHash(String hash) {
-    final m = RegExp(r'^.*(..)(.)$').firstMatch(hash);
-    if (m == null) return hash;
-    return '${m.group(2)}/${m.group(1)}/$hash';
-  }
-
-  String fullPathFromHash(String hash) {
-    return '${ggB ?? '0'}/${s(hash)}/$hash';
-  }
-
-  String urlFromUrl(String url, String? base) {
-    return url.replaceFirst(
-        'https://', 'https://${subdomainFromUrl(url, base)}.');
-  }
-
-  String urlFromHash(Map<String, dynamic> file, String? dir, String? ext) {
-    final name = (file['name'] ?? '').toString();
-    final hash = (file['hash'] ?? '').toString();
-    ext ??= dir ??= (name.contains('.') ? name.split('.').last : 'jpg');
-    dir ??= 'images';
-    if (dir.contains('small')) {
-      final u = 'https://$baseDomain/$dir/${realFullPathFromHash(hash)}.$ext';
-      return urlFromUrl(u, 'tn');
-    }
-    final u = 'https://$baseDomain/${fullPathFromHash(hash)}.$ext';
-    return urlFromUrl(u, 'w');
-  }
-
-  final comicDir = workDir..createSync(recursive: true);
-  final pagesDir = Directory(p.join(comicDir.path, 'pages'))
-    ..createSync(recursive: true);
-
-  final total = (cover.isEmpty ? 0 : 1) + files.length;
-  ctx.setTotal(total);
-  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
-
-  if (cover.isNotEmpty) {
-    ctx.setMessage('download cover');
-    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
-    if (!_nonEmptyFileExists(coverFile)) {
-      ctx.throwIfStopped();
-      await _downloadToFile(
-        Uri.parse(cover),
-        coverFile,
+    Future<_HttpRes> getText(String url) {
+      return _httpGetBytesWithRetry(
+        Uri.parse(url),
         headers: headers,
-        timeout: const Duration(minutes: 2),
-        maxBytes: 20 * 1024 * 1024,
-        retries: _retryPolicy.fileRetries('hitomi'),
+        timeout: const Duration(seconds: 20),
+        retries: 2,
+        maxBytes: 12 * 1024 * 1024,
         stopCheck: ctx.stopCheck,
         client: httpClient,
       );
-      ctx.advance();
     }
-  }
 
-  ctx.throwIfStopped();
-  await ensureGg();
+    ctx.setMessage('fetch gallery js');
+    final galleryJsRes =
+        await getText('https://ltn.$baseDomain/galleries/$rawId.js');
+    final js = galleryJsRes.bodyText();
+    final start = js.indexOf('{');
+    if (start < 0) throw StateError('invalid galleries js');
+    final galleryJson = jsonDecode(js.substring(start));
+    if (galleryJson is! Map) throw StateError('invalid galleries json');
 
-  final fileConcurrent = _concurrencyPolicy.fileConcurrent('hitomi');
-  final jobs = <Future<void> Function()>[];
-
-  for (var i = 0; i < files.length; i++) {
-    final idx = i + 1;
-    if (_pageFileExists(pagesDir, idx)) continue;
-    final f = files[i];
-    jobs.add(() async {
-      ctx.setMessage('download pages ($idx/${files.length})');
-      final uriWebp = Uri.parse(urlFromHash(f, 'webp', null));
-      String ext = 'webp';
-      try {
-        await _downloadToFile(
-          uriWebp,
-          File(p.join(pagesDir.path, '$idx.$ext')),
-          headers: headers,
-          timeout: const Duration(minutes: 5),
-          maxBytes: 50 * 1024 * 1024,
-          retries: _retryPolicy.fileRetries('hitomi'),
-          stopCheck: ctx.stopCheck,
-          client: httpClient,
-        );
-      } catch (_) {
-        ctx.throwIfStopped();
-        final name = (f['name'] ?? '').toString();
-        ext = name.contains('.') ? name.split('.').last : 'jpg';
-        final uri2 = Uri.parse(urlFromHash(f, null, null));
-        await _downloadToFile(
-          uri2,
-          File(p.join(pagesDir.path, '$idx.$ext')),
-          headers: headers,
-          timeout: const Duration(minutes: 5),
-          maxBytes: 50 * 1024 * 1024,
-          retries: _retryPolicy.fileRetries('hitomi'),
-          stopCheck: ctx.stopCheck,
-          client: httpClient,
-        );
+    ctx.setMessage('fetch cover');
+    final blockRes =
+        await getText('https://ltn.$baseDomain/galleryblock/$rawId.html');
+    final blockDoc = html.parse(blockRes.bodyText());
+    String cover = '';
+    try {
+      final source = blockDoc
+              .querySelector('div.dj-img1 > picture > source')
+              ?.attributes['data-srcset'] ??
+          blockDoc
+              .querySelector('div.cg-img1 > picture > source')
+              ?.attributes['data-srcset'] ??
+          '';
+      if (source.isNotEmpty) {
+        var v = source;
+        if (v.startsWith('//')) v = v.substring(2);
+        v = v.substring(v.indexOf('/'));
+        cover = 'https://atn.$baseDomain$v';
+        cover = cover.replaceAll(RegExp(r'2x.*'), '').trim();
+        cover = cover.replaceFirst('avifbigtn', 'webpbigtn');
+        cover = cover.replaceFirst('.avif', '.webp');
       }
-      ctx.advance();
-    });
-  }
+    } catch (_) {
+      cover = '';
+    }
 
-  var closed = false;
-  void abort() {
-    if (closed) return;
-    closed = true;
-    httpClient.close(force: true);
-  }
+    final title = (galleryJson['title'] ?? '').toString().trim();
+    final type = (galleryJson['type'] ?? '').toString().trim();
+    final lang = (galleryJson['language'] ?? '').toString().trim();
+    final time = (galleryJson['date'] ?? '').toString().trim();
 
-  await _forEachConcurrent(
-    jobs,
-    fileConcurrent,
-    (job) => job(),
-    stopCheck: ctx.stopCheck,
-    onError: abort,
-  );
+    final artists = <String>[];
+    final artistsRaw = galleryJson['artists'];
+    if (artistsRaw is List) {
+      for (final a in artistsRaw) {
+        if (a is Map && a['artist'] != null) {
+          artists.add(a['artist'].toString());
+        } else {
+          final s = a.toString().trim();
+          if (s.isNotEmpty) artists.add(s);
+        }
+      }
+    }
 
-  final hitomiComicMap = <String, dynamic>{
-    'id': rawId,
-    'name': title.isEmpty ? id : title,
-    'type': type,
-    'artists': artists.isEmpty ? ['N/A'] : artists,
-    'lang': lang,
-    'time': time,
-    'files': files,
-  };
+    final files = <Map<String, dynamic>>[];
+    final filesRaw = galleryJson['files'];
+    if (filesRaw is List) {
+      for (final f in filesRaw) {
+        if (f is! Map) continue;
+        files.add({
+          'name': (f['name'] ?? '').toString(),
+          'hash': (f['hash'] ?? '').toString(),
+          'hasWebp': (f['haswebp'] == 1) || (f['haswebp'] == true),
+          'hasAvif': (f['hasavif'] == 1) || (f['hasavif'] == true),
+          'height': int.tryParse((f['height'] ?? '').toString()) ?? 0,
+          'width': int.tryParse((f['width'] ?? '').toString()) ?? 0,
+          'galleryId': rawId,
+        });
+      }
+    }
 
-  final downloadedJson = <String, dynamic>{
-    'comic': hitomiComicMap,
-    'size': null,
-    'link': 'https://hitomi.la/reader/$rawId.html',
-    'cover': cover,
-  };
+    // GG.js parsing + url builder (ported from app)
+    var ggCacheTime = DateTime.fromMillisecondsSinceEpoch(0);
+    String? ggB;
+    var ggNumbers = <String>[];
+    var ggInitialG = 1;
 
-  return _DownloadedComicData(
-    id: id,
-    title: hitomiComicMap['name'] as String,
-    subtitle: artists.isEmpty ? 'N/A' : artists.first,
-    type: 3,
-    tags: const [],
-    directory: directory,
-    downloadedJson: downloadedJson,
-  );
+    int mm(int g) {
+      if (ggNumbers.contains(g.toString())) {
+        return ~ggInitialG & 1;
+      }
+      return ggInitialG;
+    }
+
+    String s(String h) {
+      final match = RegExp(r'(..)(.)$').firstMatch(h);
+      if (match == null) return '';
+      final g = int.parse(match.group(2)! + match.group(1)!, radix: 16);
+      return g.toString();
+    }
+
+    Future<void> ensureGg() async {
+      final now = DateTime.now();
+      if (now.difference(ggCacheTime).inMinutes < 1 &&
+          ggB != null &&
+          ggNumbers.isNotEmpty) {
+        return;
+      }
+      final res = await getText(
+        'https://ltn.$baseDomain/gg.js?_=${DateTime.now().millisecondsSinceEpoch}',
+      );
+      final text = res.bodyText();
+      final nums = RegExp(r'(?<=case )\d+').allMatches(text);
+      ggNumbers = nums.map((m) => m.group(0)!).toList();
+      ggB = RegExp(r"(?<=b: ')\d+").firstMatch(text)?.group(0);
+      ggInitialG = int.tryParse(
+              RegExp(r'(?<=var o = )\d+').firstMatch(text)?.group(0) ?? '1') ??
+          1;
+      ggCacheTime = now;
+    }
+
+    String subdomainFromUrl(String url, String? base) {
+      var retval = base ?? 'b';
+      final m = RegExp(r'/[0-9a-f]{61}([0-9a-f]{2})([0-9a-f])').firstMatch(url);
+      if (m == null) return 'a';
+      final g = int.parse(m[2]! + m[1]!, radix: 16);
+      final ch = String.fromCharCode(97 + mm(g));
+      if (retval == 'tn') return '$ch$retval';
+      if (retval == 'w') {
+        if (ch == 'a') return '${retval}1';
+        if (ch == 'b') return '${retval}2';
+      }
+      return retval;
+    }
+
+    String realFullPathFromHash(String hash) {
+      final m = RegExp(r'^.*(..)(.)$').firstMatch(hash);
+      if (m == null) return hash;
+      return '${m.group(2)}/${m.group(1)}/$hash';
+    }
+
+    String fullPathFromHash(String hash) {
+      return '${ggB ?? '0'}/${s(hash)}/$hash';
+    }
+
+    String urlFromUrl(String url, String? base) {
+      return url.replaceFirst(
+          'https://', 'https://${subdomainFromUrl(url, base)}.');
+    }
+
+    String urlFromHash(Map<String, dynamic> file, String? dir, String? ext) {
+      final name = (file['name'] ?? '').toString();
+      final hash = (file['hash'] ?? '').toString();
+      ext ??= dir ??= (name.contains('.') ? name.split('.').last : 'jpg');
+      dir ??= 'images';
+      if (dir.contains('small')) {
+        final u = 'https://$baseDomain/$dir/${realFullPathFromHash(hash)}.$ext';
+        return urlFromUrl(u, 'tn');
+      }
+      final u = 'https://$baseDomain/${fullPathFromHash(hash)}.$ext';
+      return urlFromUrl(u, 'w');
+    }
+
+    final comicDir = workDir..createSync(recursive: true);
+    final pagesDir = Directory(p.join(comicDir.path, 'pages'))
+      ..createSync(recursive: true);
+
+    final total = (cover.isEmpty ? 0 : 1) + files.length;
+    ctx.setTotal(total);
+    ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
+
+    if (cover.isNotEmpty) {
+      ctx.setMessage('download cover');
+      final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+      if (!_nonEmptyFileExists(coverFile)) {
+        ctx.throwIfStopped();
+        await _downloadToFile(
+          Uri.parse(cover),
+          coverFile,
+          headers: headers,
+          timeout: const Duration(minutes: 2),
+          maxBytes: 20 * 1024 * 1024,
+          retries: _retryPolicy.fileRetries('hitomi'),
+          stopCheck: ctx.stopCheck,
+          client: httpClient,
+        );
+        ctx.advance();
+      }
+    }
+
+    ctx.throwIfStopped();
+    await ensureGg();
+
+    final fileConcurrent = _concurrencyPolicy.fileConcurrent('hitomi');
+    final jobs = <Future<void> Function()>[];
+
+    for (var i = 0; i < files.length; i++) {
+      final idx = i + 1;
+      if (_pageFileExists(pagesDir, idx)) continue;
+      final f = files[i];
+      jobs.add(() async {
+        ctx.setMessage('download pages ($idx/${files.length})');
+        final uriWebp = Uri.parse(urlFromHash(f, 'webp', null));
+        String ext = 'webp';
+        try {
+          await _downloadToFile(
+            uriWebp,
+            File(p.join(pagesDir.path, '$idx.$ext')),
+            headers: headers,
+            timeout: const Duration(minutes: 5),
+            maxBytes: 50 * 1024 * 1024,
+            retries: _retryPolicy.fileRetries('hitomi'),
+            stopCheck: ctx.stopCheck,
+            client: httpClient,
+          );
+        } catch (_) {
+          ctx.throwIfStopped();
+          final name = (f['name'] ?? '').toString();
+          ext = name.contains('.') ? name.split('.').last : 'jpg';
+          final uri2 = Uri.parse(urlFromHash(f, null, null));
+          await _downloadToFile(
+            uri2,
+            File(p.join(pagesDir.path, '$idx.$ext')),
+            headers: headers,
+            timeout: const Duration(minutes: 5),
+            maxBytes: 50 * 1024 * 1024,
+            retries: _retryPolicy.fileRetries('hitomi'),
+            stopCheck: ctx.stopCheck,
+            client: httpClient,
+          );
+        }
+        ctx.advance();
+      });
+    }
+
+    var closed = false;
+    void abort() {
+      if (closed) return;
+      closed = true;
+      httpClient.close(force: true);
+    }
+
+    await _forEachConcurrent(
+      jobs,
+      fileConcurrent,
+      (job) => job(),
+      stopCheck: ctx.stopCheck,
+      onError: abort,
+    );
+
+    final hitomiComicMap = <String, dynamic>{
+      'id': rawId,
+      'name': title.isEmpty ? id : title,
+      'type': type,
+      'artists': artists.isEmpty ? ['N/A'] : artists,
+      'lang': lang,
+      'time': time,
+      'files': files,
+    };
+
+    final downloadedJson = <String, dynamic>{
+      'comic': hitomiComicMap,
+      'size': null,
+      'link': 'https://hitomi.la/reader/$rawId.html',
+      'cover': cover,
+    };
+
+    return _DownloadedComicData(
+      id: id,
+      title: hitomiComicMap['name'] as String,
+      subtitle: artists.isEmpty ? 'N/A' : artists.first,
+      type: 3,
+      tags: const [],
+      directory: directory,
+      downloadedJson: downloadedJson,
+    );
   } finally {
     httpClient.close(force: true);
   }
@@ -2779,102 +2786,128 @@ Future<_DownloadedComicData> _downloadHtmanga(
 
   final httpClient = HttpClient();
   try {
-  ctx.setMessage('fetch comic info');
-  final infoUrl = Uri.parse('$baseUrl/photos-index-page-1-aid-$rawId.html');
-  final infoRes = await _httpGetBytesWithRetry(
-    infoUrl,
-    headers: headers,
-    timeout: const Duration(seconds: 20),
-    retries: 2,
-    maxBytes: 6 * 1024 * 1024,
-    stopCheck: ctx.stopCheck,
-    client: httpClient,
-  );
-  final doc = html.parse(infoRes.bodyText());
+    ctx.setMessage('fetch comic info');
+    final infoUrl = Uri.parse('$baseUrl/photos-index-page-1-aid-$rawId.html');
+    final infoRes = await _httpGetBytesWithRetry(
+      infoUrl,
+      headers: headers,
+      timeout: const Duration(seconds: 20),
+      retries: 2,
+      maxBytes: 6 * 1024 * 1024,
+      stopCheck: ctx.stopCheck,
+      client: httpClient,
+    );
+    final doc = html.parse(infoRes.bodyText());
 
-  final name = (doc.querySelector('div.userwrap > h2')?.text ?? '').trim();
-  final coverSrc = doc
-      .querySelector('div.userwrap > div.asTB > div.asTBcell.uwthumb > img')
-      ?.attributes['src'];
-  final coverUrl = coverSrc == null ? '' : normalizeUrl(coverSrc);
+    final name = (doc.querySelector('div.userwrap > h2')?.text ?? '').trim();
+    final coverSrc = doc
+        .querySelector('div.userwrap > div.asTB > div.asTBcell.uwthumb > img')
+        ?.attributes['src'];
+    final coverUrl = coverSrc == null ? '' : normalizeUrl(coverSrc);
 
-  final labels = doc.querySelectorAll('div.asTBcell.uwconn > label');
-  final category =
-      labels.isNotEmpty ? labels[0].text.split('：').last.trim() : '';
-  final pagesText = labels.length > 1 ? labels[1].text.split('：').last : '';
-  final pages =
-      int.tryParse(RegExp(r'\d+').firstMatch(pagesText)?.group(0) ?? '0') ?? 0;
+    final labels = doc.querySelectorAll('div.asTBcell.uwconn > label');
+    final category =
+        labels.isNotEmpty ? labels[0].text.split('：').last.trim() : '';
+    final pagesText = labels.length > 1 ? labels[1].text.split('：').last : '';
+    final pages =
+        int.tryParse(RegExp(r'\d+').firstMatch(pagesText)?.group(0) ?? '0') ??
+            0;
 
-  final tagsDom = doc.querySelectorAll('a.tagshow');
-  final tagsMap = <String, String>{};
-  for (final t in tagsDom) {
-    final text = t.text.trim();
-    final link = (t.attributes['href'] ?? '').trim();
-    if (text.isEmpty) continue;
-    tagsMap[text] = link;
-  }
+    final tagsDom = doc.querySelectorAll('a.tagshow');
+    final tagsMap = <String, String>{};
+    for (final t in tagsDom) {
+      final text = t.text.trim();
+      final link = (t.attributes['href'] ?? '').trim();
+      if (text.isEmpty) continue;
+      tagsMap[text] = link;
+    }
 
-  final description =
-      (doc.querySelector('div.asTBcell.uwconn > p')?.text ?? '').trim();
-  final uploader =
-      (doc.querySelector('div.asTBcell.uwuinfo > a > p')?.text ?? '').trim();
+    final description =
+        (doc.querySelector('div.asTBcell.uwconn > p')?.text ?? '').trim();
+    final uploader =
+        (doc.querySelector('div.asTBcell.uwuinfo > a > p')?.text ?? '').trim();
 
-  var avatar =
-      (doc.querySelector('div.asTBcell.uwuinfo > a > img')?.attributes['src'] ??
-              '')
-          .trim();
-  avatar = normalizeUrl(avatar);
+    var avatar = (doc
+                .querySelector('div.asTBcell.uwuinfo > a > img')
+                ?.attributes['src'] ??
+            '')
+        .trim();
+    avatar = normalizeUrl(avatar);
 
-  final uploadNumText =
-      (doc.querySelector('div.asTBcell.uwuinfo > p > font')?.text ?? '0');
-  final uploadNum = int.tryParse(uploadNumText.trim()) ?? 0;
+    final uploadNumText =
+        (doc.querySelector('div.asTBcell.uwuinfo > p > font')?.text ?? '0');
+    final uploadNum = int.tryParse(uploadNumText.trim()) ?? 0;
 
-  ctx.setMessage('fetch images');
-  final galleryUrl = Uri.parse('$baseUrl/photos-gallery-aid-$rawId.html');
-  final galleryRes = await _httpGetBytesWithRetry(
-    galleryUrl,
-    headers: headers,
-    timeout: const Duration(seconds: 20),
-    retries: 2,
-    maxBytes: 20 * 1024 * 1024,
-    stopCheck: ctx.stopCheck,
-    client: httpClient,
-  );
-  final matches =
-      RegExp(r'(?<=//)[\w./\[\]()-]+').allMatches(galleryRes.bodyText());
-  final imageUrls = <String>[];
-  for (final m in matches) {
-    final u = m.group(0);
-    if (u == null || u.trim().isEmpty) continue;
-    final cleaned = u.trim().replaceFirst(RegExp(r'^/+'), '');
-    final lower = cleaned.toLowerCase();
-    if (!(lower.contains('/data/') || lower.contains('wnimg'))) continue;
-    if (lower.endsWith('.js') || lower.endsWith('.css')) continue;
-    imageUrls.add('https://$cleaned');
-  }
+    ctx.setMessage('fetch images');
+    final galleryUrl = Uri.parse('$baseUrl/photos-gallery-aid-$rawId.html');
+    final galleryRes = await _httpGetBytesWithRetry(
+      galleryUrl,
+      headers: headers,
+      timeout: const Duration(seconds: 20),
+      retries: 2,
+      maxBytes: 20 * 1024 * 1024,
+      stopCheck: ctx.stopCheck,
+      client: httpClient,
+    );
+    final matches =
+        RegExp(r'(?<=//)[\w./\[\]()-]+').allMatches(galleryRes.bodyText());
+    final imageUrls = <String>[];
+    for (final m in matches) {
+      final u = m.group(0);
+      if (u == null || u.trim().isEmpty) continue;
+      final cleaned = u.trim().replaceFirst(RegExp(r'^/+'), '');
+      final lower = cleaned.toLowerCase();
+      if (!(lower.contains('/data/') || lower.contains('wnimg'))) continue;
+      if (lower.endsWith('.js') || lower.endsWith('.css')) continue;
+      imageUrls.add('https://$cleaned');
+    }
 
-  final comicDir = workDir..createSync(recursive: true);
-  final pagesDir = Directory(p.join(comicDir.path, 'pages'))
-    ..createSync(recursive: true);
+    final comicDir = workDir..createSync(recursive: true);
+    final pagesDir = Directory(p.join(comicDir.path, 'pages'))
+      ..createSync(recursive: true);
 
-  final total = (coverUrl.isEmpty ? 0 : 1) + imageUrls.length;
-  ctx.setTotal(total);
-  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
+    final total = (coverUrl.isEmpty ? 0 : 1) + imageUrls.length;
+    ctx.setTotal(total);
+    ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
 
-  final fileConcurrent = _concurrencyPolicy.fileConcurrent('htmanga');
-  final jobs = <Future<void> Function()>[];
+    final fileConcurrent = _concurrencyPolicy.fileConcurrent('htmanga');
+    final jobs = <Future<void> Function()>[];
 
-  if (coverUrl.isNotEmpty) {
-    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
-    if (!_nonEmptyFileExists(coverFile)) {
+    if (coverUrl.isNotEmpty) {
+      final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+      if (!_nonEmptyFileExists(coverFile)) {
+        jobs.add(() async {
+          ctx.setMessage('download cover');
+          await _downloadToFile(
+            Uri.parse(coverUrl),
+            coverFile,
+            headers: headers,
+            timeout: const Duration(minutes: 2),
+            maxBytes: 20 * 1024 * 1024,
+            retries: _retryPolicy.fileRetries('htmanga'),
+            stopCheck: ctx.stopCheck,
+            client: httpClient,
+          );
+          ctx.advance();
+        });
+      }
+    }
+
+    for (var i = 0; i < imageUrls.length; i++) {
+      final idx = i + 1;
+      if (_pageFileExists(pagesDir, idx)) continue;
+      final u = imageUrls[i];
       jobs.add(() async {
-        ctx.setMessage('download cover');
+        ctx.setMessage('download pages ($idx/${imageUrls.length})');
+        final uri = Uri.parse(u);
+        final ext = _guessExtFromUrl(uri);
+        final outPath = p.join(pagesDir.path, '$idx.$ext');
         await _downloadToFile(
-          Uri.parse(coverUrl),
-          coverFile,
+          uri,
+          File(outPath),
           headers: headers,
-          timeout: const Duration(minutes: 2),
-          maxBytes: 20 * 1024 * 1024,
+          timeout: const Duration(minutes: 5),
+          maxBytes: 50 * 1024 * 1024,
           retries: _retryPolicy.fileRetries('htmanga'),
           stopCheck: ctx.stopCheck,
           client: httpClient,
@@ -2882,73 +2915,49 @@ Future<_DownloadedComicData> _downloadHtmanga(
         ctx.advance();
       });
     }
-  }
 
-  for (var i = 0; i < imageUrls.length; i++) {
-    final idx = i + 1;
-    if (_pageFileExists(pagesDir, idx)) continue;
-    final u = imageUrls[i];
-    jobs.add(() async {
-      ctx.setMessage('download pages ($idx/${imageUrls.length})');
-      final uri = Uri.parse(u);
-      final ext = _guessExtFromUrl(uri);
-      final outPath = p.join(pagesDir.path, '$idx.$ext');
-      await _downloadToFile(
-        uri,
-        File(outPath),
-        headers: headers,
-        timeout: const Duration(minutes: 5),
-        maxBytes: 50 * 1024 * 1024,
-        retries: _retryPolicy.fileRetries('htmanga'),
-        stopCheck: ctx.stopCheck,
-        client: httpClient,
-      );
-      ctx.advance();
-    });
-  }
+    var closed = false;
+    void abort() {
+      if (closed) return;
+      closed = true;
+      httpClient.close(force: true);
+    }
 
-  var closed = false;
-  void abort() {
-    if (closed) return;
-    closed = true;
-    httpClient.close(force: true);
-  }
+    await _forEachConcurrent(
+      jobs,
+      fileConcurrent,
+      (job) => job(),
+      stopCheck: ctx.stopCheck,
+      onError: abort,
+    );
 
-  await _forEachConcurrent(
-    jobs,
-    fileConcurrent,
-    (job) => job(),
-    stopCheck: ctx.stopCheck,
-    onError: abort,
-  );
+    final comicJson = <String, dynamic>{
+      'id': rawId,
+      'coverPath': coverUrl,
+      'name': name.isEmpty ? id : name,
+      'category': category,
+      'pages': pages,
+      'tags': tagsMap,
+      'description': description,
+      'uploader': uploader,
+      'avatar': avatar,
+      'uploadNum': uploadNum,
+    };
 
-  final comicJson = <String, dynamic>{
-    'id': rawId,
-    'coverPath': coverUrl,
-    'name': name.isEmpty ? id : name,
-    'category': category,
-    'pages': pages,
-    'tags': tagsMap,
-    'description': description,
-    'uploader': uploader,
-    'avatar': avatar,
-    'uploadNum': uploadNum,
-  };
+    final downloadedJson = <String, dynamic>{
+      'comic': comicJson,
+      'size': null,
+    };
 
-  final downloadedJson = <String, dynamic>{
-    'comic': comicJson,
-    'size': null,
-  };
-
-  return _DownloadedComicData(
-    id: id,
-    title: (comicJson['name'] ?? '').toString(),
-    subtitle: uploader,
-    type: 4,
-    tags: tagsMap.keys.toList(),
-    directory: directory,
-    downloadedJson: downloadedJson,
-  );
+    return _DownloadedComicData(
+      id: id,
+      title: (comicJson['name'] ?? '').toString(),
+      subtitle: uploader,
+      type: 4,
+      tags: tagsMap.keys.toList(),
+      directory: directory,
+      downloadedJson: downloadedJson,
+    );
   } finally {
     httpClient.close(force: true);
   }
@@ -2961,11 +2970,13 @@ Future<_DownloadedComicData> _downloadNhentai(
   Map<String, dynamic> params,
   _TaskCtx ctx,
 ) async {
-  final baseUrl =
-      (auth?['baseUrl'] ?? 'https://nhentai.net').toString().trim().replaceFirst(
-            RegExp(r'/+$'),
-            '',
-          );
+  final baseUrl = (auth?['baseUrl'] ?? 'https://nhentai.net')
+      .toString()
+      .trim()
+      .replaceFirst(
+        RegExp(r'/+$'),
+        '',
+      );
   final m = RegExp(r'\d+').firstMatch(target);
   final rawId = (m?.group(0) ?? target).trim();
   if (rawId.isEmpty) throw StateError('invalid target');
@@ -2986,111 +2997,134 @@ Future<_DownloadedComicData> _downloadNhentai(
 
   final httpClient = HttpClient();
   try {
-  ctx.setMessage('fetch comic info');
-  ctx.throwIfStopped();
-  final apiRes = await _httpGetBytesWithRetry(
-    Uri.parse('$baseUrl/api/gallery/$rawId'),
-    headers: headers,
-    timeout: const Duration(seconds: 20),
-    retries: 2,
-    maxBytes: 3 * 1024 * 1024,
-    stopCheck: ctx.stopCheck,
-    client: httpClient,
-  );
-
-  Object? decoded;
-  final body = apiRes.bodyText();
-  try {
-    decoded = jsonDecode(body);
-  } catch (e) {
-    final head = _snippet(body);
-    throw StateError(
-      head.isEmpty
-          ? 'nhentai api returned non-json (${apiRes.statusCode}) @ ${apiRes.uri}: $e'
-          : 'nhentai api returned non-json (${apiRes.statusCode}) @ ${apiRes.uri}: $head',
+    ctx.setMessage('fetch comic info');
+    ctx.throwIfStopped();
+    final apiRes = await _httpGetBytesWithRetry(
+      Uri.parse('$baseUrl/api/gallery/$rawId'),
+      headers: headers,
+      timeout: const Duration(seconds: 20),
+      retries: 2,
+      maxBytes: 3 * 1024 * 1024,
+      stopCheck: ctx.stopCheck,
+      client: httpClient,
     );
-  }
-  if (decoded is! Map) throw StateError('invalid nhentai api response');
-  final galleryData = Map<String, dynamic>.from(decoded);
 
-  final mediaId = (galleryData['media_id'] ?? '').toString().trim();
-  if (mediaId.isEmpty) throw StateError('missing media_id');
-
-  final titleObj = galleryData['title'];
-  final title = titleObj is Map
-      ? (titleObj['pretty'] ??
-              titleObj['english'] ??
-              titleObj['japanese'] ??
-              '')
-          .toString()
-          .trim()
-      : '';
-
-  final tags = <String>[];
-  final tagsRaw = galleryData['tags'];
-  if (tagsRaw is List) {
-    for (final t in tagsRaw) {
-      if (t is! Map) continue;
-      final name = (t['name'] ?? '').toString().trim();
-      if (name.isNotEmpty) tags.add(name);
+    Object? decoded;
+    final body = apiRes.bodyText();
+    try {
+      decoded = jsonDecode(body);
+    } catch (e) {
+      final head = _snippet(body);
+      throw StateError(
+        head.isEmpty
+            ? 'nhentai api returned non-json (${apiRes.statusCode}) @ ${apiRes.uri}: $e'
+            : 'nhentai api returned non-json (${apiRes.statusCode}) @ ${apiRes.uri}: $head',
+      );
     }
-  }
+    if (decoded is! Map) throw StateError('invalid nhentai api response');
+    final galleryData = Map<String, dynamic>.from(decoded);
 
-  final images = galleryData['images'];
-  final pages = images is Map ? images['pages'] : null;
-  if (pages is! List) throw StateError('missing images.pages');
+    final mediaId = (galleryData['media_id'] ?? '').toString().trim();
+    if (mediaId.isEmpty) throw StateError('missing media_id');
 
-  String extFromType(String t, {String fallback = 'jpg'}) {
-    return switch (t) {
-      'j' => 'jpg',
-      'p' => 'png',
-      'g' => 'gif',
-      'w' => 'webp',
-      _ => fallback,
-    };
-  }
+    final titleObj = galleryData['title'];
+    final title = titleObj is Map
+        ? (titleObj['pretty'] ??
+                titleObj['english'] ??
+                titleObj['japanese'] ??
+                '')
+            .toString()
+            .trim()
+        : '';
 
-  String cover = '';
-  try {
-    final coverObj = images is Map ? images['cover'] : null;
-    final t = coverObj is Map ? (coverObj['t'] ?? '').toString() : '';
-    final ext = extFromType(t, fallback: 'jpg');
-    cover = 'https://t.nhentai.net/galleries/$mediaId/cover.$ext';
-  } catch (_) {
-    cover = '';
-  }
+    final tags = <String>[];
+    final tagsRaw = galleryData['tags'];
+    if (tagsRaw is List) {
+      for (final t in tagsRaw) {
+        if (t is! Map) continue;
+        final name = (t['name'] ?? '').toString().trim();
+        if (name.isNotEmpty) tags.add(name);
+      }
+    }
 
-  final imageUrls = <String>[];
-  for (final raw in pages) {
-    if (raw is! Map) continue;
-    final t = (raw['t'] ?? '').toString();
-    final extension = extFromType(t, fallback: 'jpg');
-    final n = imageUrls.length + 1;
-    imageUrls.add('https://i.nhentai.net/galleries/$mediaId/$n.$extension');
-  }
+    final images = galleryData['images'];
+    final pages = images is Map ? images['pages'] : null;
+    if (pages is! List) throw StateError('missing images.pages');
 
-  final comicDir = workDir..createSync(recursive: true);
-  final pagesDir = Directory(p.join(comicDir.path, 'pages'))
-    ..createSync(recursive: true);
+    String extFromType(String t, {String fallback = 'jpg'}) {
+      return switch (t) {
+        'j' => 'jpg',
+        'p' => 'png',
+        'g' => 'gif',
+        'w' => 'webp',
+        _ => fallback,
+      };
+    }
 
-  final total = (cover.isEmpty ? 0 : 1) + imageUrls.length;
-  ctx.setTotal(total);
-  ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
+    String cover = '';
+    try {
+      final coverObj = images is Map ? images['cover'] : null;
+      final t = coverObj is Map ? (coverObj['t'] ?? '').toString() : '';
+      final ext = extFromType(t, fallback: 'jpg');
+      cover = 'https://t.nhentai.net/galleries/$mediaId/cover.$ext';
+    } catch (_) {
+      cover = '';
+    }
 
-  final fileConcurrent = _concurrencyPolicy.fileConcurrent('nhentai');
-  final jobs = <Future<void> Function()>[];
+    final imageUrls = <String>[];
+    for (final raw in pages) {
+      if (raw is! Map) continue;
+      final t = (raw['t'] ?? '').toString();
+      final extension = extFromType(t, fallback: 'jpg');
+      final n = imageUrls.length + 1;
+      imageUrls.add('https://i.nhentai.net/galleries/$mediaId/$n.$extension');
+    }
 
-  if (cover.isNotEmpty) {
-    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
-    if (!_nonEmptyFileExists(coverFile)) {
+    final comicDir = workDir..createSync(recursive: true);
+    final pagesDir = Directory(p.join(comicDir.path, 'pages'))
+      ..createSync(recursive: true);
+
+    final total = (cover.isEmpty ? 0 : 1) + imageUrls.length;
+    ctx.setTotal(total);
+    ctx.ensureProgressAtLeast(_countDownloadedProgress(comicDir));
+
+    final fileConcurrent = _concurrencyPolicy.fileConcurrent('nhentai');
+    final jobs = <Future<void> Function()>[];
+
+    if (cover.isNotEmpty) {
+      final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+      if (!_nonEmptyFileExists(coverFile)) {
+        jobs.add(() async {
+          ctx.setMessage('download cover');
+          await _downloadToFile(
+            Uri.parse(cover),
+            coverFile,
+            headers: headers,
+            timeout: const Duration(minutes: 2),
+            maxBytes: 20 * 1024 * 1024,
+            retries: _retryPolicy.fileRetries('nhentai'),
+            stopCheck: ctx.stopCheck,
+            client: httpClient,
+          );
+          ctx.advance();
+        });
+      }
+    }
+
+    for (var i = 0; i < imageUrls.length; i++) {
+      final idx = i + 1;
+      if (_pageFileExists(pagesDir, idx)) continue;
+      final u = imageUrls[i];
       jobs.add(() async {
-        ctx.setMessage('download cover');
+        ctx.setMessage('download pages ($idx/${imageUrls.length})');
+        final uri = Uri.parse(u);
+        final ext = _guessExtFromUrl(uri);
         await _downloadToFile(
-          Uri.parse(cover),
-          coverFile,
+          uri,
+          File(p.join(pagesDir.path, '$idx.$ext')),
           headers: headers,
-          timeout: const Duration(minutes: 2),
-          maxBytes: 20 * 1024 * 1024,
+          timeout: const Duration(minutes: 5),
+          maxBytes: 50 * 1024 * 1024,
           retries: _retryPolicy.fileRetries('nhentai'),
           stopCheck: ctx.stopCheck,
           client: httpClient,
@@ -3098,62 +3132,39 @@ Future<_DownloadedComicData> _downloadNhentai(
         ctx.advance();
       });
     }
-  }
 
-  for (var i = 0; i < imageUrls.length; i++) {
-    final idx = i + 1;
-    if (_pageFileExists(pagesDir, idx)) continue;
-    final u = imageUrls[i];
-    jobs.add(() async {
-      ctx.setMessage('download pages ($idx/${imageUrls.length})');
-      final uri = Uri.parse(u);
-      final ext = _guessExtFromUrl(uri);
-      await _downloadToFile(
-        uri,
-        File(p.join(pagesDir.path, '$idx.$ext')),
-        headers: headers,
-        timeout: const Duration(minutes: 5),
-        maxBytes: 50 * 1024 * 1024,
-        retries: _retryPolicy.fileRetries('nhentai'),
-        stopCheck: ctx.stopCheck,
-        client: httpClient,
-      );
-      ctx.advance();
-    });
-  }
+    var closed = false;
+    void abort() {
+      if (closed) return;
+      closed = true;
+      httpClient.close(force: true);
+    }
 
-  var closed = false;
-  void abort() {
-    if (closed) return;
-    closed = true;
-    httpClient.close(force: true);
-  }
+    await _forEachConcurrent(
+      jobs,
+      fileConcurrent,
+      (job) => job(),
+      stopCheck: ctx.stopCheck,
+      onError: abort,
+    );
 
-  await _forEachConcurrent(
-    jobs,
-    fileConcurrent,
-    (job) => job(),
-    stopCheck: ctx.stopCheck,
-    onError: abort,
-  );
+    final downloadedJson = <String, dynamic>{
+      'comicID': id,
+      'title': title.isEmpty ? id : title,
+      'size': null,
+      'cover': cover,
+      'tags': tags,
+    };
 
-  final downloadedJson = <String, dynamic>{
-    'comicID': id,
-    'title': title.isEmpty ? id : title,
-    'size': null,
-    'cover': cover,
-    'tags': tags,
-  };
-
-  return _DownloadedComicData(
-    id: id,
-    title: downloadedJson['title'] as String,
-    subtitle: '',
-    type: 5,
-    tags: tags,
-    directory: directory,
-    downloadedJson: downloadedJson,
-  );
+    return _DownloadedComicData(
+      id: id,
+      title: downloadedJson['title'] as String,
+      subtitle: '',
+      type: 5,
+      tags: tags,
+      directory: directory,
+      downloadedJson: downloadedJson,
+    );
   } finally {
     httpClient.close(force: true);
   }
@@ -3228,8 +3239,6 @@ Handler buildHandler({
       [v, maxOrder + 1, now, now],
     );
   }
-
-  ensureFavoriteFolder(defaultFavoriteFolder);
 
   bool hasAnyPageFile(Directory pagesDir) {
     if (!pagesDir.existsSync()) return false;
@@ -3943,8 +3952,8 @@ Handler buildHandler({
                 'type': r['type'],
                 'source': r['source'],
                 'target': r['target'],
-                'title': ((r['comic_title'] ?? r['display_title']) ?? '')
-                    .toString(),
+                'title':
+                    ((r['comic_title'] ?? r['display_title']) ?? '').toString(),
                 'coverUrl': (() {
                   final comicId = (r['comic_id'] ?? '').toString().trim();
                   final hasCover = (r['has_cover'] as int?) == 1;
@@ -3997,8 +4006,8 @@ Handler buildHandler({
         'type': row['type'],
         'source': row['source'],
         'target': row['target'],
-        'title': ((row['comic_title'] ?? row['display_title']) ?? '')
-            .toString(),
+        'title':
+            ((row['comic_title'] ?? row['display_title']) ?? '').toString(),
         'coverUrl': (() {
           final comicId = (row['comic_id'] ?? '').toString().trim();
           final hasCover = (row['has_cover'] as int?) == 1;
@@ -4021,7 +4030,6 @@ Handler buildHandler({
   });
 
   api.get('/v1/favorites/folders', (Request req) {
-    ensureFavoriteFolder(defaultFavoriteFolder);
     final rows = db.select(
       'select name, order_value from favorite_folders order by order_value desc',
     );
@@ -4041,7 +4049,6 @@ Handler buildHandler({
     if (!isValidFolderName(name)) {
       return _json(400, {'ok': false, 'error': 'invalid name'});
     }
-    ensureFavoriteFolder(defaultFavoriteFolder);
     ensureFavoriteFolder(name);
     return _json(200, {'ok': true});
   });
@@ -4053,7 +4060,6 @@ Handler buildHandler({
     if (namesRaw is! List) {
       return _json(400, {'ok': false, 'error': 'missing names'});
     }
-    ensureFavoriteFolder(defaultFavoriteFolder);
     final names = namesRaw
         .map((e) => e.toString().trim())
         .where(isValidFolderName)
@@ -4090,10 +4096,6 @@ Handler buildHandler({
     if (!isValidFolderName(from) || !isValidFolderName(to)) {
       return _json(400, {'ok': false, 'error': 'invalid name'});
     }
-    if (from == defaultFavoriteFolder) {
-      return _json(400, {'ok': false, 'error': 'cannot rename default'});
-    }
-    ensureFavoriteFolder(defaultFavoriteFolder);
     final exists = db.select(
       'select name from favorite_folders where name = ?',
       [from],
@@ -4123,21 +4125,18 @@ Handler buildHandler({
     if (!isValidFolderName(folder)) {
       return _json(400, {'ok': false, 'error': 'invalid name'});
     }
-    if (folder == defaultFavoriteFolder) {
-      return _json(400, {'ok': false, 'error': 'cannot delete default'});
-    }
-    ensureFavoriteFolder(defaultFavoriteFolder);
     final exists = db.select(
       'select name from favorite_folders where name = ?',
       [folder],
     ).firstOrNull;
     if (exists == null) return _json(404, {'ok': false, 'error': 'not found'});
 
-    final moveTo = (req.url.queryParameters['moveTo'] ?? defaultFavoriteFolder)
-        .toString()
-        .trim();
+    final moveTo = (req.url.queryParameters['moveTo'] ?? '').toString().trim();
     if (!isValidFolderName(moveTo)) {
       return _json(400, {'ok': false, 'error': 'invalid moveTo'});
+    }
+    if (moveTo == folder) {
+      return _json(400, {'ok': false, 'error': 'moveTo cannot equal folder'});
     }
     ensureFavoriteFolder(moveTo);
 
@@ -4174,7 +4173,6 @@ Handler buildHandler({
   });
 
   api.get('/v1/favorites', (Request req) {
-    ensureFavoriteFolder(defaultFavoriteFolder);
     final folder = (req.url.queryParameters['folder'] ?? defaultFavoriteFolder)
         .toString()
         .trim();
@@ -4234,11 +4232,10 @@ Handler buildHandler({
       return _json(400, {'ok': false, 'error': 'missing id'});
     }
 
-    final folderRaw =
-        (json['folder'] ?? defaultFavoriteFolder).toString().trim();
-    final folder =
-        isValidFolderName(folderRaw) ? folderRaw : defaultFavoriteFolder;
-    ensureFavoriteFolder(defaultFavoriteFolder);
+    final folder = (json['folder'] ?? '').toString().trim();
+    if (!isValidFolderName(folder)) {
+      return _json(400, {'ok': false, 'error': 'invalid folder'});
+    }
     ensureFavoriteFolder(folder);
 
     final title = (json['title'] ?? '').toString();
@@ -4340,7 +4337,6 @@ Handler buildHandler({
     if (!isValidFolderName(folderRaw)) {
       return _json(400, {'ok': false, 'error': 'invalid folder'});
     }
-    ensureFavoriteFolder(defaultFavoriteFolder);
     ensureFavoriteFolder(folderRaw);
 
     final itemsRaw = json['items'];

@@ -19,7 +19,7 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
   String? error;
 
   List<ServerFavoriteFolder> folders = const [];
-  String selectedFolder = '默认';
+  String selectedFolder = '';
   List<ServerFavoriteItem> items = const [];
 
   bool reorderMode = false;
@@ -64,9 +64,20 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
       final f = await PicaServer.instance.listFavoriteFolders();
       final folderNames =
           f.map((e) => e.name).where((e) => e.trim().isNotEmpty).toList();
+      if (folderNames.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          folders = f;
+          selectedFolder = '';
+          items = const [];
+          loading = false;
+          reorderMode = false;
+        });
+        return;
+      }
       final selected = folderNames.contains(selectedFolder)
           ? selectedFolder
-          : (folderNames.isNotEmpty ? folderNames.first : '默认');
+          : folderNames.first;
       final list = await PicaServer.instance.listFavorites(selected);
       if (!mounted) return;
       setState(() {
@@ -470,8 +481,8 @@ class _ServerFavoriteTile extends ComicTile {
 
   @override
   List<ComicTileMenuOption>? get addonMenuOptions => [
-        ComicTileMenuOption(
-            "移动到收藏夹".tl, Icons.drive_file_move_outline, (_, __, ___) => onMove()),
+        ComicTileMenuOption("移动到收藏夹".tl, Icons.drive_file_move_outline,
+            (_, __, ___) => onMove()),
         ComicTileMenuOption(
             "从服务器收藏删除".tl, Icons.delete_outline, (_, __, ___) => onDelete()),
       ];
@@ -573,10 +584,6 @@ class _ServerFavoriteFoldersPageState extends State<ServerFavoriteFoldersPage> {
   }
 
   Future<void> _deleteFolder(String name) async {
-    if (name == '默认') {
-      showToast(message: "不能删除默认收藏夹".tl);
-      return;
-    }
     final moveToOptions = folders.where((e) => e != name).toList();
     if (moveToOptions.isEmpty) {
       showToast(message: "至少保留一个收藏夹".tl);
@@ -585,8 +592,7 @@ class _ServerFavoriteFoldersPageState extends State<ServerFavoriteFoldersPage> {
     final moveTo = await showDialog<String>(
       context: context,
       builder: (context) {
-        var selected = '默认';
-        if (!moveToOptions.contains(selected)) selected = moveToOptions.first;
+        var selected = moveToOptions.first;
         return StatefulBuilder(builder: (context, setState) {
           return AlertDialog(
             title: Text("删除收藏夹".tl),
@@ -676,12 +682,12 @@ class _ServerFavoriteFoldersPageState extends State<ServerFavoriteFoldersPage> {
               children: [
                 IconButton(
                   tooltip: "重命名".tl,
-                  onPressed: name == '默认' ? null : () => _renameFolder(name),
+                  onPressed: () => _renameFolder(name),
                   icon: const Icon(Icons.edit_outlined),
                 ),
                 IconButton(
                   tooltip: "删除".tl,
-                  onPressed: name == '默认' ? null : () => _deleteFolder(name),
+                  onPressed: () => _deleteFolder(name),
                   icon: const Icon(Icons.delete_outline),
                 ),
               ],
