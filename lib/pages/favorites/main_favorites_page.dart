@@ -10,11 +10,13 @@ import "package:pica_comic/foundation/app.dart";
 import "package:pica_comic/foundation/local_favorites.dart";
 import "package:pica_comic/foundation/log.dart";
 import "package:pica_comic/network/download.dart";
+import "package:pica_comic/network/pica_server.dart";
 import "package:pica_comic/tools/translations.dart";
 
 import "../../network/net_fav_to_local.dart";
 import "../../tools/io_tools.dart";
 import "local_favorites.dart";
+import "local_to_server_import.dart";
 import "local_search_page.dart";
 import "network_favorite_page.dart";
 
@@ -498,7 +500,70 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
               () => App.to(context, () => const LocalSearchPage())),
           buildItem("排序".tl, Icons.reorder, () {
             context.to(() => const _FoldersReorderPage());
-          })
+          }),
+          buildItem("导入".tl, Icons.cloud_upload_outlined, () async {
+            if (!PicaServer.instance.enabled) {
+              showToast(message: "未配置服务器".tl);
+              return;
+            }
+
+            final canImportCurrent =
+                controller.current != null && controller.isNetwork == false;
+
+            final scope = await showDialog<String>(
+              context: context,
+              builder: (context) {
+                return AlertDialog(
+                  title: Text("导入到服务器".tl),
+                  content: Text(
+                    "将本地收藏导入到服务器收藏；不会删除本地数据。"
+                        .tl,
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(null),
+                      child: Text("取消".tl),
+                    ),
+                    if (canImportCurrent)
+                      FilledButton.tonal(
+                        onPressed: () =>
+                            Navigator.of(context).pop("current"),
+                        child: Text("导入当前收藏夹".tl),
+                      ),
+                    FilledButton(
+                      onPressed: () => Navigator.of(context).pop("all"),
+                      child: Text("导入全部".tl),
+                    ),
+                  ],
+                );
+              },
+            );
+
+            if (scope == null) return;
+
+            final items = scope == "current" && canImportCurrent
+                ? LocalFavoritesManager()
+                    .getAllComics(controller.current!)
+                    .map((e) =>
+                        FavoriteItemWithFolderInfo(e, controller.current!))
+                    .toList()
+                : LocalFavoritesManager().allComics();
+
+            if (items.isEmpty) {
+              showToast(message: "没有可导入的项目".tl);
+              return;
+            }
+
+            final res = await showDialog<LocalFavoritesImportResult>(
+              context: context,
+              barrierDismissible: false,
+              builder: (context) =>
+                  ImportLocalFavoritesToServerDialog(items: items),
+            );
+            if (res != null) {
+              showToast(message: res.toToastText());
+            }
+          }),
         ],
       ).paddingHorizontal(12),
     );

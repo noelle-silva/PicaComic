@@ -34,7 +34,6 @@ import '../../network/http_client.dart';
 import '../../network/http_proxy.dart';
 import '../../network/jm_network/jm_network.dart';
 import '../../network/nhentai_network/nhentai_main_network.dart';
-import '../../network/pica_server.dart';
 import '../../network/update.dart';
 import '../../network/webdav.dart';
 import '../../tools/background_service.dart';
