@@ -22,7 +22,9 @@ const _jmAuthKey = "18comicAPPContent";
 Map<String, String> getBaseHeaders() {
   return {
     "Accept": "*/*",
-    "Accept-Encoding": "gzip, deflate, br, zstd",
+    // Dart/IO 的 HttpClient 不支持 br / zstd 解压；这里宣称支持会导致服务端偶发返回
+    // 无法解码的压缩响应，从而触发 `FormatException: Unexpected extension byte`。
+    "Accept-Encoding": "gzip",
     "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
     "Connection": "keep-alive",
     "Origin": "https://localhost",
@@ -34,10 +36,11 @@ Map<String, String> getBaseHeaders() {
   };
 }
 
-Map<String, String> getImgHeaders(){
+Map<String, String> getImgHeaders() {
   return {
-    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept":
+        "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Encoding": "gzip",
     "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
     "Connection": "keep-alive",
     "Referer": "https://localhost/",
@@ -50,9 +53,7 @@ Map<String, String> getImgHeaders(){
   };
 }
 
-BaseOptions getApiOptions(int time,
-    {bool post = false, bool byte = true}) {
-
+BaseOptions getApiOptions(int time, {bool post = false, bool byte = true}) {
   var token = md5.convert(const Utf8Encoder().convert("$time$_jmAuthKey"));
 
   return BaseOptions(

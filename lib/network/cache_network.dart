@@ -8,6 +8,27 @@ import 'package:pica_comic/network/cookie_jar.dart';
 import 'package:pica_comic/network/http_client.dart';
 import 'app_dio.dart';
 
+bool _looksLikeGzip(Uint8List data) {
+  return data.length >= 2 && data[0] == 0x1f && data[1] == 0x8b;
+}
+
+Uint8List _maybeGunzip(Uint8List data) {
+  if (_looksLikeGzip(data)) {
+    try {
+      return Uint8List.fromList(gzip.decode(data));
+    } catch (_) {
+      // 解压失败按原样返回，交给上层处理
+    }
+  }
+  return data;
+}
+
+String _decodePossiblyCompressedUtf8(Uint8List data,
+    {bool allowMalformed = true}) {
+  final bytes = _maybeGunzip(data);
+  return utf8.decode(bytes, allowMalformed: allowMalformed);
+}
+
 ///缓存网络请求, 仅提供get方法, 其它的没有意义
 class CachedNetwork {
   Future<CachedNetworkRes<String>> get(String url, BaseOptions options,
@@ -24,8 +45,14 @@ class CachedNetwork {
     if (expiredTime != CacheExpiredTime.no) {
       var cache = await CacheManager().findCache(key);
       if (cache != null) {
-        var file = File(cache);
-        return CachedNetworkRes(await file.readAsString(), 200, url);
+        try {
+          var file = File(cache);
+          final bytes = await file.readAsBytes();
+          return CachedNetworkRes(
+              _decodePossiblyCompressedUtf8(bytes), 200, url);
+        } catch (_) {
+          await CacheManager().delete(key);
+        }
       }
     }
     options.responseType = ResponseType.bytes;
@@ -38,11 +65,13 @@ class CachedNetwork {
     if (res.data == null && !url.contains("random")) {
       throw Exception("Empty data");
     }
+    final body = _decodePossiblyCompressedUtf8(res.data!);
     if (expiredTime != CacheExpiredTime.no) {
-      await CacheManager().writeCache(key, res.data!, expiredTime.time);
+      await CacheManager().writeCache(
+          key, Uint8List.fromList(utf8.encode(body)), expiredTime.time);
     }
-    return CachedNetworkRes(utf8.decode(res.data!, allowMalformed: true),
-        res.statusCode, res.realUri.toString(), res.headers.map);
+    return CachedNetworkRes(
+        body, res.statusCode, res.realUri.toString(), res.headers.map);
   }
 
   void delete(String url) async {

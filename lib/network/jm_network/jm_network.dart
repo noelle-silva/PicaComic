@@ -27,6 +27,34 @@ import 'headers.dart';
 import 'jm_image.dart';
 import 'jm_models.dart';
 
+bool _looksLikeGzip(Uint8List data) {
+  return data.length >= 2 && data[0] == 0x1f && data[1] == 0x8b;
+}
+
+Uint8List _maybeGunzip(Uint8List data, {Headers? headers}) {
+  final encoding = headers?.value("content-encoding")?.toLowerCase();
+  if (encoding == "gzip" || _looksLikeGzip(data)) {
+    try {
+      return Uint8List.fromList(gzip.decode(data));
+    } catch (_) {
+      // 解压失败就按原样返回，让后续逻辑报错/重试；别在这里吞掉真实问题。
+    }
+  }
+  return data;
+}
+
+String _decodeUtf8Body(Uint8List data,
+    {Headers? headers, bool allowMalformed = false}) {
+  final bytes = _maybeGunzip(data, headers: headers);
+  return utf8.decode(bytes, allowMalformed: allowMalformed);
+}
+
+Uint8List _toUint8List(dynamic data) {
+  if (data is Uint8List) return data;
+  if (data is List<int>) return Uint8List.fromList(data);
+  throw Exception("Unexpected response bytes type: ${data.runtimeType}");
+}
+
 extension _CachedNetwork on CachedNetwork {
   Future<CachedNetworkRes<String>> getJm(
       String url, BaseOptions options, int time,
@@ -34,10 +62,19 @@ extension _CachedNetwork on CachedNetwork {
       CookieJar? cookieJar}) async {
     await setNetworkProxy();
     final key = url;
-    var cache = await CacheManager().findCache(key);
-    if (cache != null) {
-      var file = File(cache);
-      return CachedNetworkRes(await file.readAsString(), 200, url);
+    if (expiredTime != CacheExpiredTime.no) {
+      var cache = await CacheManager().findCache(key);
+      if (cache != null) {
+        try {
+          var file = File(cache);
+          final bytes = await file.readAsBytes();
+          return CachedNetworkRes(
+              _decodeUtf8Body(bytes, allowMalformed: false), 200, url);
+        } catch (_) {
+          // 缓存可能是压缩/损坏数据，直接丢掉避免反复炸页面
+          await CacheManager().delete(key);
+        }
+      }
     }
     options.responseType = ResponseType.bytes;
     var dio = logDio(options);
@@ -48,7 +85,8 @@ extension _CachedNetwork on CachedNetwork {
     if (res.data == null) {
       throw Exception("Empty data");
     }
-    var body = utf8.decoder.convert(res.data!);
+    var body =
+        _decodeUtf8Body(res.data!, headers: res.headers, allowMalformed: false);
     if (res.statusCode != 200) {
       return CachedNetworkRes(body, res.statusCode, res.realUri.toString());
     }
@@ -59,12 +97,11 @@ extension _CachedNetwork on CachedNetwork {
     } else if (data is List) {
       throw Exception("Data parsing error");
     }
-    var decodedData = JmNetwork.convertData(
-        data,
-        "$time${JmNetwork.kJmSecret}"
-    );
+    var decodedData =
+        JmNetwork.convertData(data, "$time${JmNetwork.kJmSecret}");
     if (expiredTime != CacheExpiredTime.no) {
-      await CacheManager().writeCache(key, res.data!, expiredTime.time);
+      await CacheManager().writeCache(
+          key, Uint8List.fromList(utf8.encode(decodedData)), expiredTime.time);
     }
     return CachedNetworkRes(
         decodedData, res.statusCode, res.realUri.toString());
@@ -94,7 +131,32 @@ class JmNetwork {
     "https://rup4a04-c01.tos-ap-southeast-1.bytepluses.com/newsvr-2025.txt",
   ];
 
-  static const domainSecret = [100, 105, 111, 115, 102, 106, 99, 107, 119, 112, 113, 112, 100, 102, 106, 107, 118, 110, 113, 81, 106, 115, 105, 107];
+  static const domainSecret = [
+    100,
+    105,
+    111,
+    115,
+    102,
+    106,
+    99,
+    107,
+    119,
+    112,
+    113,
+    112,
+    100,
+    102,
+    106,
+    107,
+    118,
+    110,
+    113,
+    81,
+    106,
+    115,
+    105,
+    107
+  ];
 
   static const kJmSecret = '185Hcomic3PAPP7R';
 
@@ -138,15 +200,13 @@ class JmNetwork {
   }
 
   Future<Res<dynamic>> getAppVersionCode() async {
-    var dio = logDio(
-        BaseOptions(
-          headers: {
-            ...getBaseHeaders(),
-            "Accept-Encoding": "gzip",
-            "user-agent": ua,
-          },
-        )
-    );
+    var dio = logDio(BaseOptions(
+      headers: {
+        ...getBaseHeaders(),
+        "Accept-Encoding": "gzip",
+        "user-agent": ua,
+      },
+    ));
     try {
       var res = await dio.get("$baseUrl/static/jmapp3apk/version.json");
       try {
@@ -168,20 +228,17 @@ class JmNetwork {
   }
 
   Future<List<String>> tryFetchAndDecrypt(String url) async {
-    var dio = Dio(
-        BaseOptions(
-          headers: {
-            ...getBaseHeaders(),
-            "user-agent": ua,
-          },
-        )
-    );
+    var dio = Dio(BaseOptions(
+      headers: {
+        ...getBaseHeaders(),
+        "user-agent": ua,
+      },
+    ));
     try {
       var res = await dio.get(url);
-      var jsonData = json.decode(convertData(
-          res.data,
-          String.fromCharCodes(domainSecret)
-      )) as Map<String, dynamic>;
+      var jsonData =
+          json.decode(convertData(res.data, String.fromCharCodes(domainSecret)))
+              as Map<String, dynamic>;
       var domains = List<String>.from(jsonData['Server']);
       domains = domains.sublist(0, 4);
       return domains;
@@ -195,7 +252,7 @@ class JmNetwork {
   }
 
   Future<Res<dynamic>> getApiDomains() async {
-    for(String url in domainUrls) {
+    for (String url in domainUrls) {
       var domains = await tryFetchAndDecrypt(url);
       if (domains.isNotEmpty) {
         return Res(domains);
@@ -231,7 +288,7 @@ class JmNetwork {
             LogManager.addLog(LogLevel.error, "Network", "$e");
           }
         }
-      } ();
+      }();
     }
 
     return completer.future;
@@ -302,15 +359,16 @@ class JmNetwork {
           options: Options(validateStatus: (i) => i == 200 || i == 401),
           data: data);
       if (res.statusCode == 401) {
+        final body = _decodeUtf8Body(_toUint8List(res.data),
+            headers: res.headers, allowMalformed: true);
         return Res(null,
-            errorMessage: const JsonDecoder().convert(
-                    const Utf8Decoder().convert(res.data))["errorMsg"] ??
+            errorMessage: const JsonDecoder().convert(body)["errorMsg"] ??
                 "Unknown Error".toString());
       }
+      final body = _decodeUtf8Body(_toUint8List(res.data),
+          headers: res.headers, allowMalformed: false);
       var resData = convertData(
-          (const JsonDecoder()
-              .convert(const Utf8Decoder().convert(res.data)))["data"],
-          "$time$kJmSecret");
+          (const JsonDecoder().convert(body))["data"], "$time$kJmSecret");
       return Res<dynamic>(const JsonDecoder().convert(resData));
     } on DioException catch (e) {
       if (kDebugMode) {
@@ -332,9 +390,7 @@ class JmNetwork {
 
   Future<void> updateImgUrl(int index) async {
     try {
-      var res = await get(
-          "$baseUrl/setting?app_img_shunt=$index"
-      );
+      var res = await get("$baseUrl/setting?app_img_shunt=$index");
       var url = res.data["img_host"];
       appdata.settings[86] = url;
       appdata.updateSettings();
@@ -662,8 +718,8 @@ class JmNetwork {
   }
 
   Future<Res<JmComicInfo>> getComicInfo(String id) async {
-    var res = await get("$baseUrl/album?id=$id",
-        expiredTime: CacheExpiredTime.no);
+    var res =
+        await get("$baseUrl/album?id=$id", expiredTime: CacheExpiredTime.no);
     if (res.error) {
       if (res.errorMessage!.contains("Empty data")) {
         throw Exception("漫畫不存在: id = $id");
@@ -727,12 +783,12 @@ class JmNetwork {
   }
 
   Future<Res<bool>> login(String account, String pwd) async {
-
     if (appdata.settings[15] == "1") {
       var i = await selectDomain();
       if (i != null) {
         appdata.settings[17] = i.toString();
-        LogManager.addLog(LogLevel.info, "Network", "Selected JM API Stream ${i + 1}: ${domains[i]}");
+        LogManager.addLog(LogLevel.info, "Network",
+            "Selected JM API Stream ${i + 1}: ${domains[i]}");
       }
     }
     _performingLogin = true;
@@ -756,8 +812,7 @@ class JmNetwork {
             "Network",
             res.error
                 ? "JM auto check-in failed\n${res.errorMessage}"
-                : "JM auto check-in succeed\n${res.subData}"
-        );
+                : "JM auto check-in succeed\n${res.subData}");
       }
     }
   }
@@ -911,8 +966,8 @@ class JmNetwork {
   ///
   /// 此函数未使用, 因为似乎所有漫画的scramble都一样
   Future<String?> getScramble(String id) async {
-    var dio = Dio(
-        getApiOptions(DateTime.now().millisecondsSinceEpoch ~/ 1000, byte: false))
+    var dio = Dio(getApiOptions(DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        byte: false))
       ..interceptors.add(LogInterceptor());
     dio.interceptors.add(CookieManager(cookieJar));
     var res = await dio.get(
@@ -1036,8 +1091,7 @@ class JmNetwork {
 
   Future<Res<bool>> dailyChk() async {
     try {
-      var res = await get(
-          "$baseUrl/daily?user_id=${jm.data['id']}");
+      var res = await get("$baseUrl/daily?user_id=${jm.data['id']}");
       var dailyId = res.data['daily_id'];
       if (res.error) {
         return Res(null, errorMessage: res.errorMessage);
@@ -1045,15 +1099,13 @@ class JmNetwork {
         return const Res(null, errorMessage: "daily_id not found");
       }
       res = await post(
-          "$baseUrl/daily_chk",
-          "user_id=${jm.data['id']}&daily_id=$dailyId&"
-      );
+          "$baseUrl/daily_chk", "user_id=${jm.data['id']}&daily_id=$dailyId&");
       String msg = res.data['msg'];
       if (res.error) {
         return Res(null, errorMessage: res.errorMessage);
-      } else if (msg.startsWith("今天")
-              || msg.contains("Jcoin")
-              || msg.contains("EXP")) {
+      } else if (msg.startsWith("今天") ||
+          msg.contains("Jcoin") ||
+          msg.contains("EXP")) {
         return Res(true, subData: msg);
       } else {
         return Res(null, errorMessage: msg);
