@@ -1,0 +1,14 @@
+## Copy this file to `android/key.properties` (DO NOT commit it) and fill in your real values.
+##
+## Keep the keystore and passwords safe. If you lose them, you can't update the same app package again.
+##
+## Example:
+## storePassword=...
+## keyPassword=...
+## keyAlias=...
+## storeFile=../pica-release.jks
+
+storePassword=
+keyPassword=
+keyAlias=
+storeFile=

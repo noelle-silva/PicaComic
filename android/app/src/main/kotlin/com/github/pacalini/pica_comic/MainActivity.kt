@@ -76,10 +76,11 @@ class MainActivity: FlutterFragmentActivity() {
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger,"pica_comic/settings").setMethodCallHandler{
                 call, res ->
+            val myPackageName = packageName
             if(call.method == "link") {
                 val intent = Intent(
                     android.provider.Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS,
-                    Uri.parse("package:com.github.pacalini.pica_comic"),
+                    Uri.parse("package:$myPackageName"),
                 )
                 startActivity(intent)
                 res.success(null)
@@ -89,7 +90,7 @@ class MainActivity: FlutterFragmentActivity() {
                 } else {
                     Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
                 }
-                intent.data = Uri.parse("package:com.github.pacalini.pica_comic")
+                intent.data = Uri.parse("package:$myPackageName")
                 startActivity(intent)
                 res.success(null)
             } else if(call.method == "files_check") {
