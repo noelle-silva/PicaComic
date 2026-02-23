@@ -1,0 +1,18 @@
+services:
+  pica-server:
+    build:
+      context: ./backend
+    container_name: pica-server
+    ports:
+      - "8080:8080"
+    environment:
+      PICA_BIND: 0.0.0.0
+      PICA_PORT: "8080"
+      PICA_STORAGE: /data
+      # PICA_API_KEY: change_me
+      # PICA_ENABLE_USERDATA: "1"
+    volumes:
+      - ./backend/storage:/data
+      # 如果你更喜欢沿用后端的 `.env` 配置文件，也可以挂载：
+      # - ./backend/.env:/app/.env:ro
+    restart: unless-stopped
