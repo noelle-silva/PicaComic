@@ -21,6 +21,12 @@ class PicaServer {
 
   String get baseUrl => appdata.settings.elementAtOrNull(90) ?? '';
 
+  int get uploadSendTimeoutSeconds {
+    final raw = appdata.settings.elementAtOrNull(92) ?? '1800';
+    final v = int.tryParse(raw.trim()) ?? 1800;
+    return v.clamp(60, 24 * 60 * 60);
+  }
+
   String get _normalizedBaseUrl {
     var v = baseUrl.trim();
     while (v.endsWith('/')) {
@@ -155,7 +161,10 @@ class PicaServer {
       final res = await dio.post(
         '/api/v1/tasks/upload',
         data: form,
-        options: Options(validateStatus: (_) => true),
+        options: Options(
+          validateStatus: (_) => true,
+          sendTimeout: Duration(seconds: uploadSendTimeoutSeconds),
+        ),
       );
       final data = res.data;
       if (data is! Map) throw Exception('invalid response');
@@ -756,7 +765,9 @@ class ServerTask {
       comicId: map['comicId']?.toString(),
       createdAt: int.tryParse((map['createdAt'] ?? '').toString()),
       updatedAt: int.tryParse((map['updatedAt'] ?? '').toString()),
-      params: map['params'] is Map ? Map<String, dynamic>.from(map['params']) : null,
+      params: map['params'] is Map
+          ? Map<String, dynamic>.from(map['params'])
+          : null,
     );
   }
 

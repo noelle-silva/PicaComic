@@ -722,10 +722,48 @@ void syncDataSettings(BuildContext context) {
 }
 
 void serverSettings(BuildContext context) {
-  String url = (appdata.settings.elementAtOrNull(90) ?? "").trim();
-  String apiKey = (appdata.implicitData.elementAtOrNull(4) ?? "").trim();
+  App.to(context, () => const ServerSettingsPage());
+}
 
-  String normalizeUrl(String input) {
+class ServerSettingsPage extends StatefulWidget {
+  const ServerSettingsPage({super.key});
+
+  @override
+  State<ServerSettingsPage> createState() => _ServerSettingsPageState();
+}
+
+class _ServerSettingsPageState extends State<ServerSettingsPage> {
+  late final TextEditingController _urlController;
+  late final TextEditingController _apiKeyController;
+  late final TextEditingController _uploadTimeoutMinutesController;
+
+  bool _testing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final url = (appdata.settings.elementAtOrNull(90) ?? '').trim();
+    final apiKey = (appdata.implicitData.elementAtOrNull(4) ?? '').trim();
+    final uploadSeconds =
+        int.tryParse((appdata.settings.elementAtOrNull(92) ?? '1800').trim()) ??
+            1800;
+    final uploadMinutes = (uploadSeconds / 60).round().clamp(1, 24 * 60);
+
+    _urlController = TextEditingController(text: url);
+    _apiKeyController = TextEditingController(text: apiKey);
+    _uploadTimeoutMinutesController =
+        TextEditingController(text: uploadMinutes.toString());
+  }
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    _apiKeyController.dispose();
+    _uploadTimeoutMinutesController.dispose();
+    super.dispose();
+  }
+
+  String _normalizeUrl(String input) {
     var v = input.trim();
     while (v.endsWith('/')) {
       v = v.substring(0, v.length - 1);
@@ -733,87 +771,101 @@ void serverSettings(BuildContext context) {
     return v;
   }
 
-  Future<bool> test() async {
-    final base = normalizeUrl(url);
+  Future<bool> _testConnection() async {
+    final base = _normalizeUrl(_urlController.text);
     if (base.isEmpty) return false;
+    final apiKey = _apiKeyController.text.trim();
     try {
-      final dio = Dio(BaseOptions(
-        baseUrl: base,
-        connectTimeout: const Duration(seconds: 8),
-        receiveTimeout: const Duration(seconds: 8),
-        headers: apiKey.isEmpty ? null : {'X-Api-Key': apiKey},
-      ));
+      final dio = Dio(
+        BaseOptions(
+          baseUrl: base,
+          connectTimeout: const Duration(seconds: 8),
+          receiveTimeout: const Duration(seconds: 8),
+          headers: apiKey.isEmpty ? null : {'X-Api-Key': apiKey},
+        ),
+      );
       final res = await dio.get('/api/v1/health');
       if (res.statusCode != 200) return false;
-      if (res.data is Map) {
-        return (res.data['ok'] == true);
-      }
+      if (res.data is Map) return res.data['ok'] == true;
       return true;
     } catch (_) {
       return false;
     }
   }
 
-  showDialog(
-    context: context,
-    useSafeArea: false,
-    builder: (context) => ContentDialog(
-      title: "私有服务器".tl,
-      content: Column(
+  void _save() {
+    final normalizedUrl = _normalizeUrl(_urlController.text);
+    final apiKey = _apiKeyController.text.trim();
+    final minutes =
+        int.tryParse(_uploadTimeoutMinutesController.text.trim()) ?? 30;
+    final clampedMinutes = minutes.clamp(1, 24 * 60);
+
+    appdata.settings[90] = normalizedUrl;
+    appdata.settings[92] = (clampedMinutes * 60).toString();
+    if (appdata.implicitData.length >= 5) {
+      appdata.implicitData[4] = apiKey;
+    }
+    appdata.updateSettings(false);
+    appdata.writeImplicitData();
+
+    App.back(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text("私有服务器".tl),
+        actions: [
+          TextButton(
+            onPressed: _testing
+                ? null
+                : () async {
+                    setState(() => _testing = true);
+                    try {
+                      final ok = await _testConnection();
+                      showToast(message: ok ? "连接成功".tl : "连接失败".tl);
+                    } finally {
+                      if (mounted) setState(() => _testing = false);
+                    }
+                  },
+            child: Text(_testing ? "测试中".tl : "测试".tl),
+          ),
+          TextButton(
+            onPressed: _save,
+            child: Text("保存".tl),
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
         children: [
           TextField(
-            onChanged: (s) => url = s.trim(),
-            controller: TextEditingController(text: url),
+            controller: _urlController,
             decoration: InputDecoration(
               border: const OutlineInputBorder(),
               label: Text("URL".tl),
               hintText: "http://192.168.1.10:8080".tl,
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           TextField(
-            onChanged: (s) => apiKey = s.trim(),
-            controller: TextEditingController(text: apiKey),
+            controller: _apiKeyController,
             obscureText: true,
             decoration: InputDecoration(
               border: const OutlineInputBorder(),
               label: Text("API Key".tl),
             ),
           ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              FilledButton.tonal(
-                onPressed: () async {
-                  var dialog = showLoadingDialog(
-                    context,
-                    allowCancel: false,
-                    barrierDismissible: false,
-                    message: "测试连接中".tl,
-                  );
-                  final ok = await test();
-                  dialog.close();
-                  showToast(message: ok ? "连接成功".tl : "连接失败".tl);
-                },
-                child: Text("测试".tl),
-              ),
-              const SizedBox(width: 12),
-              FilledButton(
-                onPressed: () async {
-                  final normalizedUrl = normalizeUrl(url);
-                  appdata.settings[90] = normalizedUrl;
-                  if (appdata.implicitData.length >= 5) {
-                    appdata.implicitData[4] = apiKey;
-                  }
-                  appdata.updateSettings(false);
-                  appdata.writeImplicitData();
-
-                  App.globalBack();
-                },
-                child: Text("提交".tl),
-              ),
-            ],
+          const SizedBox(height: 12),
+          TextField(
+            controller: _uploadTimeoutMinutesController,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              border: const OutlineInputBorder(),
+              label: Text("上传超时(分钟)".tl),
+              hintText: "30".tl,
+            ),
           ),
           const SizedBox(height: 8),
           Text(
@@ -821,9 +873,9 @@ void serverSettings(BuildContext context) {
             style: const TextStyle(fontSize: 12),
           ),
         ],
-      ).paddingHorizontal(12),
-    ),
-  );
+      ),
+    );
+  }
 }
 
 void setCacheLimit() {

@@ -121,6 +121,7 @@ class Appdata {
     "2.0.11", //89 jm app version
     "", //90 private server url
     "0", //91 本地收藏夹排序: 0-正序, 1-倒序
+    "1800", //92 私有服务器上传超时(秒)
   ];
 
   /// 隐式数据, 用于存储一些不需要用户设置的数据, 此数据通常为某些组件的状态, 此设置不应当被同步
@@ -368,9 +369,7 @@ class _Settings {
   }
 
   String get jmImgUrlIndex =>
-      int.parse(appdata.settings[37]) < 4
-        ? appdata.settings[37]
-        : "0";
+      int.parse(appdata.settings[37]) < 4 ? appdata.settings[37] : "0";
 
   List<String> get explorePages => appdata.settings[77].split(',');
 
