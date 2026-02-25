@@ -66,6 +66,26 @@ class _ServerLibraryPageState extends State<ServerLibraryPage> {
       appBar: AppBar(
         title: Text("服务器漫画库".tl),
         actions: [
+          _ComicCountIndicator(
+            countText: loading
+                ? "…"
+                : error != null
+                    ? "--"
+                    : comics.length.toString(),
+          ),
+          IconButton(
+            tooltip: "搜索".tl,
+            onPressed: (loading || error != null)
+                ? null
+                : () {
+                    context
+                        .to<bool>(() => ServerLibrarySearchPage(comics: comics))
+                        .then((changed) {
+                      if (changed == true) _load();
+                    });
+                  },
+            icon: const Icon(Icons.search),
+          ),
           IconButton(
             tooltip: "刷新".tl,
             onPressed: _load,
@@ -176,8 +196,7 @@ class _ServerComicTile extends ComicTile {
       width: double.infinity,
       height: double.infinity,
       image: StreamImageProvider(
-        () =>
-            ImageManager().getImage(url, PicaServer.instance.imageHeaders()),
+        () => ImageManager().getImage(url, PicaServer.instance.imageHeaders()),
         url,
       ),
     );
@@ -188,6 +207,156 @@ class _ServerComicTile extends ComicTile {
 
   @override
   void onSecondaryTap_(TapDownDetails details) => onTap();
+}
+
+class _ComicCountIndicator extends StatelessWidget {
+  const _ComicCountIndicator({required this.countText});
+
+  final String countText;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      child: Center(
+        child: Tooltip(
+          message: "服务器漫画总数".tl,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: Text(
+                countText,
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ServerLibrarySearchPage extends StatefulWidget {
+  const ServerLibrarySearchPage({super.key, required this.comics});
+
+  final List<ServerComic> comics;
+
+  @override
+  State<ServerLibrarySearchPage> createState() =>
+      _ServerLibrarySearchPageState();
+}
+
+class _ServerLibrarySearchPageState extends State<ServerLibrarySearchPage> {
+  final controller = TextEditingController();
+  final focusNode = FocusNode();
+
+  late List<ServerComic> comics;
+  String keyword = "";
+  bool changed = false;
+  bool allowPop = false;
+
+  @override
+  void initState() {
+    super.initState();
+    comics = List.of(widget.comics);
+    Future.delayed(const Duration(milliseconds: 150), () {
+      if (mounted) focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    focusNode.dispose();
+    super.dispose();
+  }
+
+  bool _match(ServerComic comic, String keyword) {
+    final k = keyword.trim().toLowerCase();
+    if (k.isEmpty) return true;
+    if (comic.title.toLowerCase().contains(k)) return true;
+    if (comic.subtitle.toLowerCase().contains(k)) return true;
+    if (comic.id.toLowerCase().contains(k)) return true;
+    for (final t in comic.tags) {
+      if (t.toLowerCase().contains(k)) return true;
+    }
+    return false;
+  }
+
+  Future<void> _openComic(BuildContext context, ServerComic comic) async {
+    final res =
+        await context.to<bool>(() => ServerComicDetailPage(comicId: comic.id));
+    if (res == true && mounted) {
+      setState(() {
+        changed = true;
+        comics.removeWhere((c) => c.id == comic.id);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = comics.where((c) => _match(c, keyword)).toList();
+
+    return PopScope(
+      canPop: allowPop,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        setState(() => allowPop = true);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) Navigator.of(context).pop(changed);
+        });
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: TextField(
+            focusNode: focusNode,
+            controller: controller,
+            decoration: InputDecoration(
+              border: InputBorder.none,
+              hintText: "搜索".tl,
+            ),
+            onChanged: (s) => setState(() => keyword = s),
+          ),
+          actions: [
+            if (keyword.isNotEmpty)
+              IconButton(
+                tooltip: "清除".tl,
+                onPressed: () {
+                  controller.clear();
+                  setState(() => keyword = "");
+                },
+                icon: const Icon(Icons.clear_rounded),
+              ),
+          ],
+        ),
+        body: filtered.isEmpty
+            ? ListView(
+                children: [
+                  const SizedBox(height: 120),
+                  const Icon(Icons.search_off_outlined, size: 56),
+                  const SizedBox(height: 12),
+                  Center(child: Text("无匹配结果".tl)),
+                ],
+              )
+            : GridView.builder(
+                gridDelegate: SliverGridDelegateWithComics(),
+                itemCount: filtered.length,
+                itemBuilder: (context, index) {
+                  final comic = filtered[index];
+                  return _ServerComicTile(
+                    comic,
+                    onTap: () => _openComic(context, comic),
+                  );
+                },
+              ),
+      ),
+    );
+  }
 }
 
 class ServerComicDetailPage extends StatefulWidget {
