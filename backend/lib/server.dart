@@ -25,6 +25,81 @@ enum _TaskStopMode {
   cancel,
 }
 
+class _ProxySettings {
+  final String directive; // PROXY / SOCKS5
+  final String host;
+  final int port;
+
+  const _ProxySettings({
+    required this.directive,
+    required this.host,
+    required this.port,
+  });
+
+  String toFindProxy() => '$directive $host:$port';
+
+  @override
+  String toString() => toFindProxy();
+}
+
+_ProxySettings? _proxySettings;
+
+_ProxySettings? _parseProxySettings(String? input) {
+  final raw = (input ?? '').trim();
+  if (raw.isEmpty) return null;
+
+  final lower = raw.toLowerCase();
+  if (lower == 'direct' || lower == 'none' || lower == 'off' || lower == '0') {
+    return null;
+  }
+
+  Uri uri;
+  try {
+    uri = raw.contains('://') ? Uri.parse(raw) : Uri.parse('http://$raw');
+  } on FormatException catch (e) {
+    throw ArgumentError.value(
+      input,
+      'proxy',
+      'invalid proxy format ($e), expected host:port or scheme://host:port',
+    );
+  }
+
+  final scheme = uri.scheme.toLowerCase();
+  final host = uri.host.trim();
+  final port = uri.port;
+  if (host.isEmpty || port <= 0 || port > 65535) {
+    throw ArgumentError.value(
+      input,
+      'proxy',
+      'invalid proxy host/port, expected host:port',
+    );
+  }
+
+  final directive = switch (scheme) {
+    'http' || 'https' => 'PROXY',
+    'socks5' || 'socks5h' => 'SOCKS5',
+    _ => throw ArgumentError.value(
+        input,
+        'proxy',
+        'unsupported proxy scheme: $scheme (supported: http, https, socks5)',
+      ),
+  };
+
+  return _ProxySettings(directive: directive, host: host, port: port);
+}
+
+HttpClient _newHttpClient({Duration? connectionTimeout}) {
+  final http = HttpClient();
+  if (connectionTimeout != null) {
+    http.connectionTimeout = connectionTimeout;
+  }
+  final p = _proxySettings;
+  if (p != null) {
+    http.findProxy = (_) => p.toFindProxy();
+  }
+  return http;
+}
+
 typedef _StopCheck = _TaskStopMode? Function();
 
 class _TaskStopped implements Exception {
@@ -205,7 +280,7 @@ Future<void> _downloadToFile(
     }
 
     final ownedClient = client == null;
-    final http = client ?? (HttpClient()..connectionTimeout = timeout);
+    final http = client ?? _newHttpClient(connectionTimeout: timeout);
     try {
       final req = await http.getUrl(uri).timeout(timeout);
       req.followRedirects = true;
@@ -349,7 +424,7 @@ Future<_HttpRes> _httpGetBytes(
     throw ArgumentError('unsupported scheme');
   }
   final ownedClient = client == null;
-  final http = client ?? (HttpClient()..connectionTimeout = timeout);
+  final http = client ?? _newHttpClient(connectionTimeout: timeout);
   try {
     final stop = stopCheck?.call();
     if (stop != null) throw _TaskStopped(stop);
@@ -1372,7 +1447,7 @@ Future<_DownloadedComicData> _downloadPicacg(
     };
   }
 
-  final httpClient = HttpClient();
+  final httpClient = _newHttpClient();
   try {
     Future<Map<String, dynamic>> getJson(String pathWithQuery) async {
       final uri = Uri.parse('$apiUrl/$pathWithQuery');
@@ -1707,7 +1782,7 @@ Future<_DownloadedComicData> _downloadEhentai(
     return res;
   }
 
-  final httpClient = HttpClient();
+  final httpClient = _newHttpClient();
   try {
     ctx.setMessage('fetch gallery info');
     final galleryRes = await _httpGetBytesWithRetry(
@@ -1970,7 +2045,7 @@ Future<_DownloadedComicData> _downloadJm(
       'Mozilla/5.0 (Linux; Android 10; K; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/138.0.0.0 Mobile Safari/537.36';
   const imgUa = 'Dalvik/2.1.0 (Linux; Android 10; K)';
 
-  final httpClient = HttpClient();
+  final httpClient = _newHttpClient();
   try {
     Map<String, String> baseHeaders(int time, {bool post = false}) {
       final token = md5.convert(utf8.encode('$time$jmAuthKey')).toString();
@@ -2472,7 +2547,7 @@ Future<_DownloadedComicData> _downloadHitomi(
     'referer': 'https://hitomi.la/reader/$rawId.html',
   };
 
-  final httpClient = HttpClient();
+  final httpClient = _newHttpClient();
   try {
     Future<_HttpRes> getText(String url) {
       return _httpGetBytesWithRetry(
@@ -2795,7 +2870,7 @@ Future<_DownloadedComicData> _downloadHtmanga(
     return '$baseUrl/$v';
   }
 
-  final httpClient = HttpClient();
+  final httpClient = _newHttpClient();
   try {
     ctx.setMessage('fetch comic info');
     final infoUrl = Uri.parse('$baseUrl/photos-index-page-1-aid-$rawId.html');
@@ -3006,7 +3081,7 @@ Future<_DownloadedComicData> _downloadNhentai(
     if (cookie.isNotEmpty) 'cookie': cookie,
   };
 
-  final httpClient = HttpClient();
+  final httpClient = _newHttpClient();
   try {
     ctx.setMessage('fetch comic info');
     ctx.throwIfStopped();
@@ -3185,11 +3260,14 @@ Handler buildHandler({
   required String storageDir,
   String? apiKey,
   bool enableUserdata = false,
+  String? proxy,
   int fileRetriesDefault = 2,
   Map<String, int> fileRetriesBySource = const {},
   int fileConcurrentDefault = 6,
   Map<String, int> fileConcurrentBySource = const {},
 }) {
+  _proxySettings = _parseProxySettings(proxy);
+
   _retryPolicy = _RetryPolicy(
     fileRetriesDefault: fileRetriesDefault,
     fileRetriesBySource: {

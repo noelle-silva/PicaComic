@@ -30,6 +30,7 @@ Future<void> main(List<String> args) async {
   final storage = envOrDot('PICA_STORAGE', './storage');
   final apiKey = Platform.environment['PICA_API_KEY'] ?? dotEnv['PICA_API_KEY'];
   final enableUserdata = envOrDot('PICA_ENABLE_USERDATA', '0').trim() == '1';
+  final proxy = envOrDotNullable('PICA_PROXY');
 
   final fileRetriesDefault =
       intOr(envOrDotNullable('PICA_FILE_RETRIES_DEFAULT'), 2);
@@ -80,6 +81,7 @@ Future<void> main(List<String> args) async {
     storageDir: storage,
     apiKey: apiKey,
     enableUserdata: enableUserdata,
+    proxy: proxy,
     fileRetriesDefault: fileRetriesDefault,
     fileRetriesBySource: fileRetriesBySource,
     fileConcurrentDefault: fileConcurrentDefault,
@@ -96,4 +98,11 @@ Future<void> main(List<String> args) async {
   stdout
       .writeln(apiKey == null ? 'Auth: disabled' : 'Auth: enabled (X-Api-Key)');
   stdout.writeln(enableUserdata ? 'Userdata: enabled' : 'Userdata: disabled');
+  final proxyValue = (proxy ?? '').trim();
+  final proxyDisabled = proxyValue.isEmpty ||
+      proxyValue.toLowerCase() == 'direct' ||
+      proxyValue.toLowerCase() == 'none' ||
+      proxyValue.toLowerCase() == 'off' ||
+      proxyValue == '0';
+  stdout.writeln(proxyDisabled ? 'Proxy: disabled' : 'Proxy: enabled');
 }
