@@ -31,6 +31,8 @@ Future<void> main(List<String> args) async {
   final apiKey = Platform.environment['PICA_API_KEY'] ?? dotEnv['PICA_API_KEY'];
   final enableUserdata = envOrDot('PICA_ENABLE_USERDATA', '0').trim() == '1';
   final proxy = envOrDotNullable('PICA_PROXY');
+  final proxyUsername = envOrDotNullable('PICA_PROXY_USERNAME');
+  final proxyPassword = envOrDotNullable('PICA_PROXY_PASSWORD');
 
   final fileRetriesDefault =
       intOr(envOrDotNullable('PICA_FILE_RETRIES_DEFAULT'), 2);
@@ -82,6 +84,8 @@ Future<void> main(List<String> args) async {
     apiKey: apiKey,
     enableUserdata: enableUserdata,
     proxy: proxy,
+    proxyUsername: proxyUsername,
+    proxyPassword: proxyPassword,
     fileRetriesDefault: fileRetriesDefault,
     fileRetriesBySource: fileRetriesBySource,
     fileConcurrentDefault: fileConcurrentDefault,

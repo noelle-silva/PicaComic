@@ -12,6 +12,8 @@ services:
       # PICA_API_KEY: change_me
       # PICA_ENABLE_USERDATA: "1"
       # PICA_PROXY: "http://127.0.0.1:7890"
+      # PICA_PROXY_USERNAME: "user"
+      # PICA_PROXY_PASSWORD: "pass"
     volumes:
       - ./backend/storage:/data
       # 如果你更喜欢沿用后端的 `.env` 配置文件，也可以挂载：

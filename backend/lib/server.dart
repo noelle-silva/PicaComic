@@ -29,11 +29,15 @@ class _ProxySettings {
   final String directive; // PROXY / SOCKS5
   final String host;
   final int port;
+  final String? username;
+  final String? password;
 
   const _ProxySettings({
     required this.directive,
     required this.host,
     required this.port,
+    this.username,
+    this.password,
   });
 
   String toFindProxy() => '$directive $host:$port';
@@ -85,7 +89,31 @@ _ProxySettings? _parseProxySettings(String? input) {
       ),
   };
 
-  return _ProxySettings(directive: directive, host: host, port: port);
+  String? username;
+  String? password;
+  final userInfo = uri.userInfo.trim();
+  if (userInfo.isNotEmpty) {
+    final parts = userInfo.split(':');
+    username = Uri.decodeComponent(parts.first);
+    password =
+        parts.length <= 1 ? '' : Uri.decodeComponent(parts.sublist(1).join(':'));
+  }
+
+  if (directive == 'SOCKS5' && username != null) {
+    throw ArgumentError.value(
+      input,
+      'proxy',
+      'SOCKS5 proxy authentication is not supported; use http(s) proxy or remove user:pass',
+    );
+  }
+
+  return _ProxySettings(
+    directive: directive,
+    host: host,
+    port: port,
+    username: username,
+    password: password,
+  );
 }
 
 HttpClient _newHttpClient({Duration? connectionTimeout}) {
@@ -96,6 +124,18 @@ HttpClient _newHttpClient({Duration? connectionTimeout}) {
   final p = _proxySettings;
   if (p != null) {
     http.findProxy = (_) => p.toFindProxy();
+    if (p.username != null && p.directive == 'PROXY') {
+      http.authenticateProxy = (host, port, scheme, realm) async {
+        if (host != p.host || port != p.port) return false;
+        http.addProxyCredentials(
+          host,
+          port,
+          realm ?? '',
+          HttpClientBasicCredentials(p.username!, p.password ?? ''),
+        );
+        return true;
+      };
+    }
   }
   return http;
 }
@@ -3261,12 +3301,34 @@ Handler buildHandler({
   String? apiKey,
   bool enableUserdata = false,
   String? proxy,
+  String? proxyUsername,
+  String? proxyPassword,
   int fileRetriesDefault = 2,
   Map<String, int> fileRetriesBySource = const {},
   int fileConcurrentDefault = 6,
   Map<String, int> fileConcurrentBySource = const {},
 }) {
-  _proxySettings = _parseProxySettings(proxy);
+  final proxySettings = _parseProxySettings(proxy);
+  final u = (proxyUsername ?? '').trim();
+  final pw = proxyPassword;
+  if (proxySettings != null && u.isNotEmpty) {
+    if (proxySettings.directive == 'SOCKS5') {
+      throw ArgumentError.value(
+        proxy,
+        'proxy',
+        'SOCKS5 proxy authentication is not supported; use http(s) proxy',
+      );
+    }
+    _proxySettings = _ProxySettings(
+      directive: proxySettings.directive,
+      host: proxySettings.host,
+      port: proxySettings.port,
+      username: u,
+      password: pw,
+    );
+  } else {
+    _proxySettings = proxySettings;
+  }
 
   _retryPolicy = _RetryPolicy(
     fileRetriesDefault: fileRetriesDefault,
