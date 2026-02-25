@@ -258,6 +258,20 @@ class TapController {
 
   static void onPointerMove(PointerMoveEvent event){
     final logic = StateController.find<ComicReadingPageLogic>();
+
+    if (logic.tools) {
+      final context = App.globalContext;
+      if (context != null) {
+        final topBarHeight = MediaQuery.of(context).padding.top + 50;
+        final bottomBarHeight = 105 + MediaQuery.of(context).padding.bottom;
+        final screenHeight = MediaQuery.of(context).size.height;
+        if (event.position.dy < topBarHeight ||
+            screenHeight - event.position.dy < bottomBarHeight) {
+          return;
+        }
+      }
+    }
+
     if(event.pointer == _tapDownPointer?.id){
       _tapDownPointer!.offset += event.delta;
       if(_tapDownPointer!.getDistance() > 1){

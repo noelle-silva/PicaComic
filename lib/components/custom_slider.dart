@@ -106,6 +106,17 @@ class _CustomSliderState extends State<CustomSlider> {
     }
   }
 
+  bool get _isConfigValid => widget.divisions > 0 && widget.max > widget.min;
+
+  double _valueFromDx(double dx, double width) {
+    final clampedDx = dx.clamp(0.0, width);
+    final effectiveDx = widget.reversed ? (width - clampedDx) : clampedDx;
+    final gap = width / widget.divisions;
+    final gapValue = (widget.max - widget.min) / widget.divisions;
+    final computed = (effectiveDx / gap).round() * gapValue + widget.min;
+    return computed.clamp(widget.min, widget.max);
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -117,25 +128,20 @@ class _CustomSliderState extends State<CustomSlider> {
           cursor: SystemMouseCursors.click,
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
-            onTapDown: (details){
-              var dx = details.localPosition.dx;
-              if(widget.reversed){
-                dx = constrains.maxWidth - dx;
-              }
-              var gap = constrains.maxWidth / widget.divisions;
-              var gapValue = (widget.max - widget.min)  / widget.divisions;
-              widget.onChanged.call((dx / gap).round() * gapValue + widget.min);
-            },
-            onVerticalDragUpdate: (details){
-              var dx = details.localPosition.dx;
-              if(dx > constrains.maxWidth || dx < 0)  return;
-              if(widget.reversed){
-                dx = constrains.maxWidth - dx;
-              }
-              var gap = constrains.maxWidth / widget.divisions;
-              var gapValue = (widget.max - widget.min)  / widget.divisions;
-              widget.onChanged.call((dx / gap).round() * gapValue + widget.min);
-            },
+            onTapDown: !_isConfigValid
+                ? null
+                : (details) {
+                    widget.onChanged.call(
+                      _valueFromDx(details.localPosition.dx, constrains.maxWidth),
+                    );
+                  },
+            onHorizontalDragUpdate: !_isConfigValid
+                ? null
+                : (details) {
+                    widget.onChanged.call(
+                      _valueFromDx(details.localPosition.dx, constrains.maxWidth),
+                    );
+                  },
             child: SizedBox(
               height: 24,
               child: Center(
@@ -156,7 +162,7 @@ class _CustomSliderState extends State<CustomSlider> {
                           ),
                         ),
                       ),
-                      if(constrains.maxWidth / widget.divisions > 10)
+                      if(_isConfigValid && constrains.maxWidth / widget.divisions > 10)
                         Positioned.fill(
                           child: Row(
                             children: (){
@@ -184,7 +190,11 @@ class _CustomSliderState extends State<CustomSlider> {
                         right: widget.reversed ? 0 : null,
                         child: Center(
                           child: Container(
-                            width: constrains.maxWidth * ((value - widget.min) / (widget.max - widget.min)),
+                            width: !_isConfigValid
+                                ? 0
+                                : constrains.maxWidth *
+                                    ((value - widget.min) /
+                                        (widget.max - widget.min)),
                             height: 8,
                             decoration: BoxDecoration(
                                 color: theme.activeTrackColor,
@@ -196,8 +206,18 @@ class _CustomSliderState extends State<CustomSlider> {
                       Positioned(
                         top: 0,
                         bottom: 0,
-                        left: widget.reversed ? null : constrains.maxWidth * ((value - widget.min) / (widget.max - widget.min))-11,
-                        right: !widget.reversed ? null : constrains.maxWidth * ((value - widget.min) / (widget.max - widget.min))-11,
+                        left: !_isConfigValid || widget.reversed
+                            ? null
+                            : constrains.maxWidth *
+                                    ((value - widget.min) /
+                                        (widget.max - widget.min)) -
+                                11,
+                        right: !_isConfigValid || !widget.reversed
+                            ? null
+                            : constrains.maxWidth *
+                                    ((value - widget.min) /
+                                        (widget.max - widget.min)) -
+                                11,
                         child: Center(
                           child: Container(
                             width: 22,

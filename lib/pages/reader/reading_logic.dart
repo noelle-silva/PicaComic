@@ -91,9 +91,8 @@ class ComicReadingPageLogic extends StateController {
     order <= 0 ? order = 1 : order;
     itemScrollListener.itemPositions.addListener(() {
       var newIndex = itemScrollListener.itemPositions.value.first.index + 1;
-      if(newIndex != index) {
+      if (newIndex != index) {
         index = newIndex;
-        update(["ToolBar"]);
       }
     });
   }
@@ -138,11 +137,15 @@ class ComicReadingPageLogic extends StateController {
 
   ///当前的页面, 0和最后一个为空白页, 用于进行章节跳转
   set index(int value) {
+    if (_index == value) {
+      return;
+    }
     _index = value;
     for (var element in _indexChangeCallbacks) {
       element(value);
     }
     updateHistory();
+    update(["ToolBar"]);
   }
 
   final _indexChangeCallbacks = <void Function(int)>[];

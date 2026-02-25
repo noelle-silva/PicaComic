@@ -183,7 +183,6 @@ extension ImageExt on ComicReadingPage {
             logic.jumpToNextChapter();
           } else {
             logic.index = i;
-            logic.update();
           }
         },
       );
@@ -286,7 +285,6 @@ extension ImageExt on ComicReadingPage {
             logic.index = logic.singlePageForFirstScreen
                 ? (i * 2 - 2).clamp(1, logic.urls.length)
                 : i * 2 - 1;
-            logic.update();
           }
         },
       );

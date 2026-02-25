@@ -250,7 +250,8 @@ extension ToolBar on ComicReadingPage {
   Widget buildSlider(ComicReadingPageLogic logic) {
     if (logic.tools &&
         logic.index != 0 &&
-        logic.index != logic.urls.length + 1) {
+        logic.index != logic.urls.length + 1 &&
+        logic.urls.length > 1) {
       return CustomSlider(
         value: logic.index.toDouble(),
         min: 1,

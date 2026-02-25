@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:pica_comic/base.dart';
 import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/foundation/app.dart';
+import 'package:pica_comic/foundation/history.dart';
 import 'package:pica_comic/foundation/image_loader/stream_image_provider.dart';
 import 'package:pica_comic/foundation/image_manager.dart';
 import 'package:pica_comic/network/download.dart';
@@ -650,6 +651,21 @@ class _ServerComicDetailPageState extends State<ServerComicDetailPage> {
 
     try {
       final info = await PicaServer.instance.getReadInfo(c.id);
+      final target = 'server:${c.id}';
+      var history = await HistoryManager().find(target);
+      if (history == null) {
+        history = History(
+          const HistoryType(999),
+          DateTime.now(),
+          c.title,
+          c.subtitle,
+          c.coverUrl ?? "",
+          0,
+          0,
+          target,
+        );
+        await HistoryManager().addHistory(history);
+      }
       dialog.close();
       App.globalTo(
         () => ComicReadingPage(
@@ -658,8 +674,8 @@ class _ServerComicDetailPageState extends State<ServerComicDetailPage> {
             title: c.title,
             eps: info.eps,
           ),
-          1,
-          1,
+          history!.page,
+          history.ep,
         ),
       );
     } catch (e) {
