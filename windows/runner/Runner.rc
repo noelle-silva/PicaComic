@@ -95,7 +95,11 @@ BEGIN
             VALUE "InternalName", "pica_comic" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2024 com.github.pacalini. All rights reserved." "\0"
             VALUE "OriginalFilename", "pica_comic.exe" "\0"
+#ifdef _DEBUG
+            VALUE "ProductName", "pica_comic_dev" "\0"
+#else
             VALUE "ProductName", "pica_comic" "\0"
+#endif
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END
