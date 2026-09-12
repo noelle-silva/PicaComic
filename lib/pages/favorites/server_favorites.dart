@@ -407,12 +407,15 @@ class _ServerFavoritesViewState extends State<ServerFavoritesView> {
     });
 
     if (!reorderMode) {
-      return GridView(
-        key: _normalGridKey,
-        controller: _scrollController,
-        physics: const AlwaysScrollableScrollPhysics(),
-        gridDelegate: SliverGridDelegateWithComics(),
-        children: tiles,
+      return KeyedSubtree(
+        key: PageStorageKey("server_favorites"),
+        child: GridView(
+          key: _normalGridKey,
+          controller: _scrollController,
+          physics: const AlwaysScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithComics(),
+          children: tiles,
+        ),
       );
     }
 
@@ -444,12 +447,15 @@ class _ServerFavoritesViewState extends State<ServerFavoritesView> {
         color: _lightenColor(Theme.of(context).splashColor.withOpacity(1), 0.2),
       ),
       builder: (children) {
-        return GridView(
-          key: _reorderGridKey,
-          controller: _scrollController,
-          physics: const AlwaysScrollableScrollPhysics(),
-          gridDelegate: SliverGridDelegateWithComics(),
-          children: children,
+        return KeyedSubtree(
+          key: PageStorageKey("server_favorites"),
+          child: GridView(
+            key: _reorderGridKey,
+            controller: _scrollController,
+            physics: const AlwaysScrollableScrollPhysics(),
+            gridDelegate: SliverGridDelegateWithComics(),
+            children: children,
+          ),
         );
       },
       children: tiles,

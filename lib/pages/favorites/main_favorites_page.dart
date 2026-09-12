@@ -774,6 +774,9 @@ class ComicsPageView extends StatefulWidget {
   State<ComicsPageView> createState() => _ComicsPageViewState();
 }
 
+/// 本地收藏夹滚动位置（按收藏夹名记忆，仅本次运行有效）。
+final _localFavoritesScrollOffsets = <String, double>{};
+
 class _ComicsPageViewState extends StateWithController<ComicsPageView> {
   late ScrollController scrollController;
   bool showFB = true;
@@ -794,9 +797,12 @@ class _ComicsPageViewState extends StateWithController<ComicsPageView> {
 
   @override
   void initState() {
-    scrollController = ScrollController();
+    scrollController = ScrollController(
+      initialScrollOffset: _localFavoritesScrollOffsets[folder] ?? 0,
+    );
     scrollController.addListener(() {
       var current = scrollController.offset;
+      _localFavoritesScrollOffsets[folder] = current;
 
       if ((current > location && current != 0) && showFB) {
         setState(() {

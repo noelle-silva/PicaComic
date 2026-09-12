@@ -34,6 +34,9 @@ class _NormalFavoritePage extends ComicsPage<BaseComic> {
   String? get tag => "Network Comics Page: ${data.title}";
 
   @override
+  bool get keepDataAlive => true;
+
+  @override
   String? get title => null;
 
   @override
@@ -168,6 +171,7 @@ class _MultiFolderFavoritesPageState extends State<_MultiFolderFavoritesPage> {
       final keys = folders!.keys.toList();
 
       return SmoothCustomScrollView(
+        key: PageStorageKey("network_folders:${widget.data.key}"),
         slivers: [
           SliverGridViewWithFixedItemHeight(
             delegate:
@@ -429,6 +433,12 @@ class _FavoriteFolder extends ComicsPage<BaseComic> {
 
   @override
   String? get tag => "Favorites Folder $folderID";
+
+  @override
+  bool get keepDataAlive => true;
+
+  @override
+  bool get persistScrollAcrossRoutes => true;
 
   @override
   String get sourceKey => data.key;
