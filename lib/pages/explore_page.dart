@@ -59,11 +59,13 @@ class _ExplorePageState extends State<ExplorePage>
   }
 
   Widget buildBody(PageTab tab) {
-    return switch (tab.type) {
-      PageTabType.explore =>
-        _SingleExplorePage(tab.id, key: Key(tab.serialized)),
-      PageTabType.category => _CategoryTab(tab.id, key: Key(tab.serialized)),
-    };
+    return KeepAliveWrapper(
+      key: Key(tab.serialized),
+      child: switch (tab.type) {
+        PageTabType.explore => _SingleExplorePage(tab.id),
+        PageTabType.category => _CategoryTab(tab.id),
+      },
+    );
   }
 
   @override
@@ -145,7 +147,7 @@ class _ExplorePageState extends State<ExplorePage>
 }
 
 class _SingleExplorePage extends StatefulWidget {
-  const _SingleExplorePage(this.title, {super.key});
+  const _SingleExplorePage(this.title);
 
   final String title;
 
@@ -425,7 +427,7 @@ Iterable<Widget> _buildExplorePagePart(
 ///
 /// 通过 [StateWithController] 与探索栏共享同一套刷新机制（FAB 刷新当前栏）。
 class _CategoryTab extends StatefulWidget {
-  const _CategoryTab(this.categoryKey, {super.key});
+  const _CategoryTab(this.categoryKey);
 
   final String categoryKey;
 

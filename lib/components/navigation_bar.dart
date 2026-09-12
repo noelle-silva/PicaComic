@@ -29,7 +29,7 @@ class NaviPane extends StatefulWidget {
       required this.pageBuilder,
       this.initialPage = 0,
       this.onPageChange,
-      required this.observer,
+      required this.observers,
       super.key});
 
   final List<PaneItemEntry> paneItems;
@@ -42,7 +42,8 @@ class NaviPane extends StatefulWidget {
 
   final int initialPage;
 
-  final NaviObserver observer;
+  /// 与 [paneItems] 一一对应的页面观察者（每个主页面各自持有独立页面栈）。
+  final List<NaviObserver> observers;
 
   @override
   State<NaviPane> createState() => _NaviPaneState();
@@ -68,7 +69,7 @@ class _NaviPaneState extends State<NaviPane>
 
   static const _kSideBarWidth = 256.0;
 
-  static const _kTopBarHeight = 48.0;
+  NaviObserver get _currentObserver => widget.observers[_currentPage];
 
   double get bottomBarHeight =>
       _kBottomBarHeight + MediaQuery.of(context).padding.bottom;
@@ -84,9 +85,33 @@ class _NaviPaneState extends State<NaviPane>
         lowerBound: 0,
         upperBound: 3,
         vsync: this);
-    widget.observer.addListener(onNavigatorStateChange);
+    for (var observer in widget.observers) {
+      observer.addListener(onNavigatorStateChange);
+    }
     StateController.put(NaviPaddingWidgetController());
     super.initState();
+  }
+
+  @override
+  void didUpdateWidget(covariant NaviPane oldWidget) {
+    if (!_sameObservers(oldWidget.observers, widget.observers)) {
+      for (var observer in oldWidget.observers) {
+        observer.removeListener(onNavigatorStateChange);
+      }
+      for (var observer in widget.observers) {
+        observer.addListener(onNavigatorStateChange);
+      }
+    }
+    super.didUpdateWidget(oldWidget);
+  }
+
+  static bool _sameObservers(
+      List<NaviObserver> a, List<NaviObserver> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!identical(a[i], b[i])) return false;
+    }
+    return true;
   }
 
   @override
@@ -99,14 +124,16 @@ class _NaviPaneState extends State<NaviPane>
   void dispose() {
     StateController.remove<NaviPaddingWidgetController>();
     controller.dispose();
-    widget.observer.removeListener(onNavigatorStateChange);
+    for (var observer in widget.observers) {
+      observer.removeListener(onNavigatorStateChange);
+    }
     super.dispose();
   }
 
   double targetFormContext(BuildContext context) {
     var width = MediaQuery.of(context).size.width;
     double target = 0;
-    if (widget.observer.pageCount > 1) {
+    if (_currentObserver.pageCount > 1) {
       target = 1;
     }
     if (width > changePoint) {
@@ -171,14 +198,6 @@ class _NaviPaneState extends State<NaviPane>
                   bottom: bottomBarHeight * (0 - value),
                   child: buildBottom(),
                 ),
-              if (value <= 1)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  top: _kTopBarHeight * (0 - value) +
-                      MediaQuery.of(context).padding.top * (1 - value),
-                  child: buildTop(),
-                ),
               Positioned(
                 left: _kFoldedSideBarWidth * ((value - 2.0).clamp(-1.0, 0.0)),
                 top: 0,
@@ -186,8 +205,7 @@ class _NaviPaneState extends State<NaviPane>
                 child: buildLeft(),
               ),
               Positioned(
-                top: _kTopBarHeight * ((1 - value).clamp(0, 1)) +
-                    MediaQuery.of(context).padding.top * (value == 1 ? 0 : 1),
+                top: MediaQuery.of(context).padding.top * (value == 1 ? 0 : 1),
                 left: _kFoldedSideBarWidth * ((value - 1).clamp(0, 1)) +
                     (_kSideBarWidth - _kFoldedSideBarWidth) *
                         ((value - 2).clamp(0, 1)),
@@ -202,33 +220,6 @@ class _NaviPaneState extends State<NaviPane>
             ],
           );
         },
-      ),
-    );
-  }
-
-  Widget buildTop() {
-    return Material(
-      child: Container(
-        padding: const EdgeInsets.only(left: 16, right: 16),
-        height: _kTopBarHeight,
-        width: double.infinity,
-        child: Row(
-          children: [
-            Text(
-              widget.paneItems[currentPage].label,
-              style: const TextStyle(fontSize: 18),
-            ),
-            const Spacer(),
-            for (var action in widget.paneActions)
-              Tooltip(
-                message: action.label,
-                child: IconButton(
-                  icon: Icon(action.icon),
-                  onPressed: action.onTap,
-                ),
-              )
-          ],
-        ),
       ),
     );
   }
@@ -669,7 +660,7 @@ class NaviPaddingWidget extends StatelessWidget {
       builder: (controller) {
         return Padding(
           padding: controller._withPadding ? EdgeInsets.only(
-            top: _NaviPaneState._kTopBarHeight + context.padding.top,
+            top: context.padding.top,
             bottom: _NaviPaneState._kBottomBarHeight + context.padding.bottom,
           ) : EdgeInsets.zero,
           child: child,

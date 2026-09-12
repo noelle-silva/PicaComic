@@ -62,24 +62,44 @@ class MainPage extends StatefulWidget {
 }
 
 class MainPageState extends State<MainPage> {
-  GlobalKey<NavigatorState>? _navigatorKey;
+  /// 每个主页面各自持有独立页面栈，互不干扰，切换时保活。
+  final _navigatorKeys = <HomePageId, GlobalKey<NavigatorState>>{
+    for (var id in HomePageId.values) id: GlobalKey<NavigatorState>(),
+  };
 
-  late final NaviObserver _observer;
+  final _observers = <HomePageId, NaviObserver>{
+    for (var id in HomePageId.values) id: NaviObserver(),
+  };
 
-  void to(Widget Function() widget, {bool preventDuplicate = false}) async {
+  late final List<NaviObserver> _observerList = [
+    for (var id in HomePageId.values) _observers[id]!,
+  ];
+
+  /// 各主页面 Navigator 专属的观察者列表（稳定实例，避免重建时反复换绑）。
+  late final Map<HomePageId, List<NaviObserver>> _navigatorObservers = {
+    for (var id in HomePageId.values) id: List.unmodifiable([_observers[id]!]),
+  };
+
+  /// 已进入过的主页面。首次访问才创建页面栈，之后一直保活。
+  final _visitedPages = <HomePageId>{};
+
+  late HomePageId _currentPageId = HomePageId.values[_initialPageIndex];
+
+  void to(Widget Function() widget, {bool preventDuplicate = false}) {
     if (preventDuplicate) {
       var page = widget();
-      if ("/${page.runtimeType}" == _observer.routes.last.toString()) return;
+      var routes = _observers[_currentPageId]!.routes;
+      if (routes.isNotEmpty &&
+          "/${page.runtimeType}" == routes.last.toString()) {
+        return;
+      }
     }
-    App.to(_navigatorKey!.currentContext!, widget);
+    App.to(App.mainNavigatorKey!.currentContext!, widget);
   }
 
   void back() {
-    _navigatorKey!.currentContext!.pop();
+    App.mainNavigatorKey!.currentContext!.pop();
   }
-
-  List<Widget> get _pages =>
-      [for (var id in HomePageId.values) _buildPage(id)];
 
   Widget _buildPage(HomePageId id) => switch (id) {
         HomePageId.me => const MePage(),
@@ -87,6 +107,39 @@ class MainPageState extends State<MainPage> {
         HomePageId.favorites => FavoritesPage(),
         HomePageId.explore => ExplorePage(key: Key(appdata.settings[77])),
       };
+
+  Widget _buildPageNavigator(HomePageId id) {
+    return Navigator(
+      key: _navigatorKeys[id],
+      observers: _navigatorObservers[id]!,
+      onGenerateRoute: (settings) => AppPageRoute(
+        preventRebuild: false,
+        isRootRoute: true,
+        builder: (context) {
+          return NaviPaddingWidget(child: _buildPage(id));
+        },
+      ),
+    );
+  }
+
+  /// 内容区：只显示当前主页面，其余冻结保活（不绘制、动画暂停，状态保留）。
+  Widget _buildPageContent(int index) {
+    var current = HomePageId.values[index];
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        for (var id in HomePageId.values)
+          if (_visitedPages.contains(id))
+            TickerMode(
+              enabled: id == current,
+              child: Offstage(
+                offstage: id != current,
+                child: _buildPageNavigator(id),
+              ),
+            ),
+      ],
+    );
+  }
 
   PaneItemEntry _paneEntry(HomePageId id) {
     var (icon, activeIcon) = switch (id) {
@@ -205,8 +258,8 @@ class MainPageState extends State<MainPage> {
 
   @override
   void initState() {
-    _navigatorKey = GlobalKey();
-    App.mainNavigatorKey = _navigatorKey;
+    _visitedPages.add(_currentPageId);
+    App.mainNavigatorKey = _navigatorKeys[_currentPageId];
     _login();
     notifications.requestPermission();
     notifications.cancelAll();
@@ -220,7 +273,6 @@ class MainPageState extends State<MainPage> {
 
     Future.delayed(const Duration(milliseconds: 300), () => Webdav.syncData())
         .then((v) => checkClipboard());
-    _observer = NaviObserver();
     super.initState();
   }
 
@@ -228,32 +280,19 @@ class MainPageState extends State<MainPage> {
   Widget build(BuildContext context) {
     return NaviPane(
       initialPage: _initialPageIndex,
-      observer: _observer,
+      observers: _observerList,
       paneItems: [for (var id in HomePageId.values) _paneEntry(id)],
       paneActions: const [],
-      pageBuilder: (index) {
-        return Navigator(
-          observers: [_observer],
-          key: _navigatorKey,
-          onGenerateRoute: (settings) => AppPageRoute(
-            preventRebuild: false,
-            isRootRoute: true,
-            builder: (context) {
-              return NaviPaddingWidget(child: _pages[index]);
-            },
-          ),
-        );
-      },
+      pageBuilder: _buildPageContent,
       onPageChange: (index) {
         HapticFeedback.selectionClick();
-        _navigatorKey!.currentState?.pushAndRemoveUntil(
-            AppPageRoute(
-                preventRebuild: false,
-                isRootRoute: true,
-                builder: (context) {
-                  return NaviPaddingWidget(child: _pages[index]);
-                }),
-            (route) => false);
+        var id = HomePageId.values[index];
+        _currentPageId = id;
+        App.mainNavigatorKey = _navigatorKeys[id];
+        FocusManager.instance.primaryFocus?.unfocus();
+        if (_visitedPages.add(id)) {
+          setState(() {});
+        }
       },
     );
   }
