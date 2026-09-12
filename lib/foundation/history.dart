@@ -37,11 +37,23 @@ final class HistoryType {
 
   static HistoryType get nhentai => const HistoryType(5);
 
+  /// 服务器漫画（不属于漫画源体系）。
+  ///
+  /// 值沿用历史数据中既有的占位值，旧记录无需迁移即恢复识别。
+  static HistoryType get picaServer => const HistoryType(_picaServerValue);
+
+  static const _picaServerValue = 999;
+
+  /// 服务器历史来源的显示名。
+  static const picaServerName = "private_server";
+
   final int value;
 
   String get name {
     if (value >= 0 && value <= 5) {
       return ["picacg", "ehentai", "jm", "hitomi", "htmanga", "nhentai"][value];
+    } else if (this == picaServer) {
+      return picaServerName;
     } else {
       return ComicSource.fromIntKey(value)?.name ?? "Unknown";
     }
@@ -59,6 +71,8 @@ final class HistoryType {
   ComicSource? get comicSource {
     if (value >= 0 && value <= 5) {
       return ComicSource.find(name);
+    } else if (this == picaServer) {
+      return null;
     } else {
       return ComicSource.fromIntKey(value);
     }

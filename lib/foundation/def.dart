@@ -66,3 +66,6 @@ const builtInSources = [
 
 /// 服务器收藏在网络收藏页面配置中的标识。
 const kServerFavoritesKey = "pica_server";
+
+/// 服务器漫画在历史记录/阅读数据等体系中的目标前缀。
+const kServerComicPrefix = "server:";

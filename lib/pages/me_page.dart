@@ -165,6 +165,7 @@ class MePage extends StatelessWidget {
                           image: CachedImageProvider(
                             history[index].cover,
                             sourceKey: history[index].type.comicSource?.key,
+                            headers: historyCoverHeaders(history[index]),
                           ),
                           width: 96,
                           height: 128,

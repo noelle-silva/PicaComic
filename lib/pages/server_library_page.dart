@@ -651,11 +651,11 @@ class _ServerComicDetailPageState extends State<ServerComicDetailPage> {
 
     try {
       final info = await PicaServer.instance.getReadInfo(c.id);
-      final target = 'server:${c.id}';
+      final target = '$kServerComicPrefix${c.id}';
       var history = await HistoryManager().find(target);
       if (history == null) {
         history = History(
-          const HistoryType(999),
+          HistoryType.picaServer,
           DateTime.now(),
           c.title,
           c.subtitle,

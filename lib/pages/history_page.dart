@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:pica_comic/network/eh_network/eh_main_network.dart';
 import 'package:pica_comic/network/jm_network/jm_image.dart';
+import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/network/picacg_network/models.dart';
 import 'package:pica_comic/pages/comic_page.dart';
 import 'package:pica_comic/tools/time.dart';
@@ -9,6 +10,7 @@ import '../base.dart';
 import '../foundation/app.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'package:pica_comic/components/components.dart';
+import 'server_library_page.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({Key? key}) : super(key: key);
@@ -135,13 +137,15 @@ class _HistoryPageState extends State<HistoryPage> {
     return SliverGrid(
       delegate:
           SliverChildBuilderDelegate(childCount: comics_.length, (context, i) {
+        final cover = comics_[i].cover != "" ||
+                comics_[i].type == HistoryType.picaServer
+            ? comics_[i].cover
+            : getJmCoverUrl(comics_[i].target);
         final comic = ComicItemBrief(
           comics_[i].title,
           comics_[i].subtitle,
           0,
-          comics_[i].cover != ""
-              ? comics_[i].cover
-              : getJmCoverUrl(comics_[i].target),
+          cover,
           comics_[i].target,
           [],
         );
@@ -179,15 +183,7 @@ class _HistoryPageState extends State<HistoryPage> {
           name: comic.title,
           subTitle_: comic.author,
           badgeName: comics_[i].type.name,
-          headers: {
-            if (comics_[i].type == HistoryType.ehentai)
-              "cookie": EhNetwork().cookiesStr,
-            if (comics_[i].type == HistoryType.ehentai ||
-                comics_[i].type == HistoryType.hitomi)
-              "User-Agent": webUA,
-            if (comics_[i].type == HistoryType.hitomi)
-              "Referer": "https://hitomi.la/"
-          },
+          headers: historyCoverHeaders(comics_[i]),
           onTap: () {
             toComicPageWithHistory(context, comics_[i]);
           },
@@ -199,6 +195,13 @@ class _HistoryPageState extends State<HistoryPage> {
 }
 
 void toComicPageWithHistory(BuildContext context, History history) {
+  if (history.type == HistoryType.picaServer) {
+    var comicId = history.target.startsWith(kServerComicPrefix)
+        ? history.target.substring(kServerComicPrefix.length)
+        : history.target;
+    context.to(() => ServerComicDetailPage(comicId: comicId));
+    return;
+  }
   var source = history.type.comicSource;
   if (source == null) {
     showToast(message: "Comic Source Not Found");
@@ -211,4 +214,25 @@ void toComicPageWithHistory(BuildContext context, History history) {
       cover: history.cover,
     ),
   );
+}
+
+/// 历史条目封面加载所需的请求头（按来源类型）。
+///
+/// 历史页与"我"页历史横条共用，保持图片请求知识单点。
+Map<String, String>? historyCoverHeaders(History history) {
+  var type = history.type;
+  var headers = <String, String>{};
+  if (type == HistoryType.ehentai) {
+    headers["cookie"] = EhNetwork().cookiesStr;
+  }
+  if (type == HistoryType.ehentai || type == HistoryType.hitomi) {
+    headers["User-Agent"] = webUA;
+  }
+  if (type == HistoryType.hitomi) {
+    headers["Referer"] = "https://hitomi.la/";
+  }
+  if (type == HistoryType.picaServer) {
+    headers.addAll(PicaServer.instance.imageHeaders());
+  }
+  return headers.isEmpty ? null : headers;
 }

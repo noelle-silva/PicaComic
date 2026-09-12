@@ -422,7 +422,7 @@ class PicaServerReadingData extends ReadingData {
     required this.comicId,
     required this.title,
     required List<ServerEp> eps,
-  })  : id = 'server:$comicId',
+  })  : id = '$kServerComicPrefix$comicId',
         _epNumbers = eps.map((e) => e.ep).toList(),
         _eps = eps.isEmpty
             ? null
@@ -439,7 +439,7 @@ class PicaServerReadingData extends ReadingData {
   }
 
   @override
-  String get downloadId => 'server:$comicId';
+  String get downloadId => '$kServerComicPrefix$comicId';
 
   @override
   ComicType get type => ComicType.other;
