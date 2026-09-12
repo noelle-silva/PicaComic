@@ -292,25 +292,32 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
   }
 
   @override
-  Widget? get buildMoreInfo => _ServerComicInfoCard(
-        comic: data?.comic,
-        onRefresh: () => StateController.find<ComicPageLogic<ServerComicDetailData>>(
-                tag: tag)
-            .refresh_(),
-      );
-}
+  bool get moreInfoBelowTags => true;
 
-/// 服务器信息操作卡：展示基本信息，提供刷新与删除。
-class _ServerComicInfoCard extends StatelessWidget {
-  const _ServerComicInfoCard({required this.comic, required this.onRefresh});
+  @override
+  Widget? get buildMoreInfo => _ServerComicInfoCard(comic: data?.comic);
 
-  final ServerComic? comic;
+  @override
+  List<PopupMenuEntry> buildMoreMenuItems() => [
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          onTap: _refreshInfo,
+          child: Text("刷新信息".tl),
+        ),
+        PopupMenuItem(
+          onTap: _deleteFromServer,
+          child: Text("从服务器删除".tl),
+        ),
+      ];
 
-  final VoidCallback onRefresh;
+  void _refreshInfo() {
+    StateController.find<ComicPageLogic<ServerComicDetailData>>(tag: tag)
+        .refresh_();
+  }
 
-  Future<void> _delete(BuildContext context) async {
-    final id = comic?.id;
-    if (id == null) return;
+  Future<void> _deleteFromServer() async {
+    final comic = data?.comic;
+    if (comic == null) return;
     showConfirmDialog(
       context,
       "从服务器删除".tl,
@@ -323,7 +330,7 @@ class _ServerComicInfoCard extends StatelessWidget {
           barrierDismissible: false,
         );
         try {
-          await PicaServer.instance.deleteComic(id);
+          await PicaServer.instance.deleteComic(comic.id);
           dialog.close();
           showToast(message: "删除成功".tl);
           navigator.pop(true);
@@ -334,6 +341,13 @@ class _ServerComicInfoCard extends StatelessWidget {
       },
     );
   }
+}
+
+/// 服务器信息卡：展示基本信息。
+class _ServerComicInfoCard extends StatelessWidget {
+  const _ServerComicInfoCard({required this.comic});
+
+  final ServerComic? comic;
 
   @override
   Widget build(BuildContext context) {
@@ -342,7 +356,7 @@ class _ServerComicInfoCard extends StatelessWidget {
     return Card.outlined(
       margin: EdgeInsets.zero,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -368,20 +382,6 @@ class _ServerComicInfoCard extends StatelessWidget {
                 "${"上传时间".tl}: ${timeToString(DateTime.fromMillisecondsSinceEpoch(time))}",
                 style: const TextStyle(fontSize: 13),
               ),
-            Row(
-              children: [
-                TextButton.icon(
-                  onPressed: onRefresh,
-                  icon: const Icon(Icons.refresh, size: 18),
-                  label: Text("刷新信息".tl),
-                ),
-                TextButton.icon(
-                  onPressed: () => _delete(context),
-                  icon: const Icon(Icons.delete_outline, size: 18),
-                  label: Text("从服务器删除".tl),
-                ),
-              ],
-            ),
           ],
         ),
       ),
