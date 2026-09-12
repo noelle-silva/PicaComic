@@ -507,8 +507,8 @@ class PicaServer {
     );
   }
 
-  /// 查询漫画是否已下载到服务器。
-  Future<bool> containsComic({
+  /// 查询漫画在服务器资源库中的存在性、漫画 id 与活跃任务标记。
+  Future<ServerComicPresence> getComicPresence({
     required String source,
     required String target,
   }) async {
@@ -519,9 +519,14 @@ class PicaServer {
     );
     final data = res.data;
     if (data is! Map) {
-      return false;
+      return const ServerComicPresence(exists: false);
     }
-    return data['exists'] == true;
+    final comicId = data['comicId']?.toString();
+    return ServerComicPresence(
+      exists: data['exists'] == true,
+      comicId: comicId == null || comicId.isEmpty ? null : comicId,
+      active: data['active'] == true,
+    );
   }
 
   Future<void> addFavorite(ServerFavoriteItem item) async {
@@ -706,15 +711,75 @@ class ServerFavoriteContains {
   const ServerFavoriteContains({required this.exists, required this.folder});
 }
 
-/// 漫画在私人服务器上的状态（未知时字段为 null）。
+/// 漫画在服务器资源库中的存在性信息。
+class ServerComicPresence {
+  final bool exists;
+
+  /// 服务器上的漫画 id（存在时有值）。
+  final String? comicId;
+
+  /// 该漫画是否有活跃任务（排队/下载/暂停/上传）。
+  final bool active;
+
+  const ServerComicPresence({
+    required this.exists,
+    this.comicId,
+    this.active = false,
+  });
+}
+
+/// 漫画在服务器上的下载状态。
+enum ServerDownloadState {
+  /// 无法确定（服务器未配置/查询失败）。
+  unknown,
+
+  /// 服务器上没有这本书。
+  none,
+
+  /// 服务器上有进行中的任务。
+  downloading,
+
+  /// 服务器上有资源但存在缺失的集。
+  partial,
+
+  /// 全部集已下载（无分集语义的源=存在即完整）。
+  complete,
+}
+
+/// 漫画在服务器上的状态（未知时字段为 null）。
 class ComicServerStatus {
-  final bool? downloaded;
+  final ServerDownloadState downloadState;
 
   final bool? favorite;
 
-  const ComicServerStatus({this.downloaded, this.favorite});
+  /// 服务器上的漫画 id（已存在时有值）。
+  final String? comicId;
+
+  /// 服务器已下载的集下标（0 基；无分集语义时为空）。
+  final List<int> downloadedEps;
+
+  const ComicServerStatus({
+    this.downloadState = ServerDownloadState.unknown,
+    this.favorite,
+    this.comicId,
+    this.downloadedEps = const [],
+  });
 
   static const unknown = ComicServerStatus();
+
+  ComicServerStatus copyWith({
+    ServerDownloadState? downloadState,
+    bool? favorite,
+    String? comicId,
+    List<int>? downloadedEps,
+  }) {
+    return ComicServerStatus(
+      downloadState: downloadState ?? this.downloadState,
+      favorite: favorite ?? this.favorite,
+      comicId: comicId ?? this.comicId,
+      downloadedEps: downloadedEps ?? this.downloadedEps,
+    );
+  }
 }
 
 class ServerFavoriteItem {
