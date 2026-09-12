@@ -7,7 +7,7 @@ import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/foundation/image_loader/stream_image_provider.dart';
 import 'package:pica_comic/foundation/image_manager.dart';
 import 'package:pica_comic/network/pica_server.dart';
-import 'package:pica_comic/pages/server_library_page.dart';
+import 'package:pica_comic/pages/server_comic_page.dart';
 import 'package:pica_comic/tools/time.dart';
 import 'package:pica_comic/tools/translations.dart';
 
@@ -718,7 +718,7 @@ class _TaskDetailDialog extends StatelessWidget {
               nav.pop();
               nav.push(
                 MaterialPageRoute(
-                  builder: (_) => ServerComicDetailPage(comicId: task.comicId!),
+                  builder: (_) => ServerComicPage(comicId: task.comicId!),
                 ),
               );
             },

@@ -10,7 +10,7 @@ import '../base.dart';
 import '../foundation/app.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'package:pica_comic/components/components.dart';
-import 'server_library_page.dart';
+import 'server_comic_page.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({Key? key}) : super(key: key);
@@ -199,7 +199,7 @@ void toComicPageWithHistory(BuildContext context, History history) {
     var comicId = history.target.startsWith(kServerComicPrefix)
         ? history.target.substring(kServerComicPrefix.length)
         : history.target;
-    context.to(() => ServerComicDetailPage(comicId: comicId));
+    context.to(() => ServerComicPage(comicId: comicId));
     return;
   }
   var source = history.type.comicSource;

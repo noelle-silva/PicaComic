@@ -600,8 +600,13 @@ class ComicPageLogic<T extends Object> extends StateController {
   int colorIndex = 0;
   bool? favoriteOnPlatform;
 
-  void get(Future<Res<T>> Function() loadData,
-      Future<bool> Function(T) loadFavorite, String Function() getId) async {
+  ComicServerStatus serverStatus = ComicServerStatus.unknown;
+
+  void get(
+      Future<Res<T>> Function() loadData,
+      Future<bool> Function(T) loadFavorite,
+      String Function() getId,
+      Future<ComicServerStatus> Function(T) loadServerStatus) async {
     var [res, _] = await Future.wait(
         [loadData(), Future.delayed(const Duration(milliseconds: 300))]);
     if (res.error) {
@@ -613,6 +618,10 @@ class ComicPageLogic<T extends Object> extends StateController {
     } else {
       data = res.data;
       favorite = await loadFavorite(res.data);
+      loadServerStatus(res.data).then((status) {
+        serverStatus = status;
+        update();
+      });
     }
     loading = false;
     history = await HistoryManager().find(getId());
@@ -730,6 +739,48 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
 
   Future<bool> loadFavorite(T data);
 
+  /// 是否显示服务器（私人服务器）相关操作。
+  bool get enableServerActions => true;
+
+  /// 是否提供本地收藏。
+  bool get enableLocalFavorite => true;
+
+  /// 该漫画在私人服务器体系中的源标识；null 表示不支持服务器功能。
+  String? get serverSourceKey => switch (sourceKey) {
+        'picacg' => 'picacg',
+        'ehentai' => 'ehentai',
+        'jm' => 'jm',
+        'hitomi' => 'hitomi',
+        'htmanga' => 'htmanga',
+        'nhentai' => 'nhentai',
+        _ => null,
+      };
+
+  /// 查询漫画在私人服务器上的状态（默认并行查询下载与收藏，失败视为未知）。
+  Future<ComicServerStatus> loadServerStatus(T data) async {
+    if (!enableServerActions || !PicaServer.instance.enabled) {
+      return ComicServerStatus.unknown;
+    }
+    final serverSource = serverSourceKey;
+    if (serverSource == null) {
+      return ComicServerStatus.unknown;
+    }
+    try {
+      var results = await Future.wait([
+        PicaServer.instance.containsComic(source: serverSource, target: id),
+        PicaServer.instance
+            .containsFavorite(sourceKey: serverSource, target: id)
+            .then((e) => e.exists),
+      ]);
+      return ComicServerStatus(
+        downloaded: results[0],
+        favorite: results[1],
+      );
+    } catch (e) {
+      return ComicServerStatus.unknown;
+    }
+  }
+
   /// used for history
   String get id;
 
@@ -792,7 +843,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
             _logic.width = constraints.maxWidth;
             _logic.height = constraints.maxHeight;
             if (logic.loading) {
-              logic.get(loadData, loadFavorite, () => id);
+              logic.get(loadData, loadFavorite, () => id, loadServerStatus);
               return buildLoading(context);
             } else if (logic.message != null) {
               return NetworkError(
@@ -1030,11 +1081,19 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
       );
     }
 
-    if (headers["host"] == null && headers["Host"] == null) {
-      headers["host"] = Uri.parse(cover!).host;
+    ImageProvider image;
+    if (ComicSource.find(sourceKey) == null) {
+      image = StreamImageProvider(
+          () => ImageManager()
+              .getImage(cover!, headers.isEmpty ? null : headers),
+          cover!);
+    } else {
+      if (headers["host"] == null && headers["Host"] == null) {
+        headers["host"] = Uri.parse(cover!).host;
+      }
+      image = StreamImageProvider(
+          () => ImageManager().getCustomThumbnail(cover!, sourceKey), cover!);
     }
-    ImageProvider image = StreamImageProvider(
-        () => ImageManager().getCustomThumbnail(cover!, sourceKey), cover!);
     return GestureDetector(
       child: Container(
         width: width,
@@ -1240,21 +1299,30 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                 }
                 Share.share(text);
               }),
-              buildItem(
-                  favorite ? "已收藏".tl : "收藏".tl,
-                  favorite
-                      ? Icons.collections_bookmark
-                      : Icons.collections_bookmark_outlined,
-                  openFavoritePanel, () {
-                var folder = appdata.settings[51];
-                if (LocalFavoritesManager().folderNames.contains(folder)) {
-                  LocalFavoritesManager()
-                      .addComic(folder, toLocalFavoriteItem());
-                  showToast(message: "已收藏".tl);
-                }
-              }),
-              if (PicaServer.instance.enabled)
-                buildItem("服务器收藏".tl, Icons.cloud, () async {
+              if (enableLocalFavorite)
+                buildItem(
+                    favorite ? "已收藏".tl : "收藏".tl,
+                    favorite
+                        ? Icons.collections_bookmark
+                        : Icons.collections_bookmark_outlined,
+                    openFavoritePanel, () {
+                  var folder = appdata.settings[51];
+                  if (LocalFavoritesManager().folderNames.contains(folder)) {
+                    LocalFavoritesManager()
+                        .addComic(folder, toLocalFavoriteItem());
+                    showToast(message: "已收藏".tl);
+                  }
+                }),
+              if (PicaServer.instance.enabled &&
+                  enableServerActions &&
+                  serverSourceKey != null)
+                buildItem(
+                    logic.serverStatus.favorite == true
+                        ? "已收藏".tl
+                        : "服务器收藏".tl,
+                    logic.serverStatus.favorite == true
+                        ? Icons.cloud_done
+                        : Icons.cloud, () async {
                   try {
                     final folders0 =
                         await PicaServer.instance.listFavoriteFolders();
@@ -1351,62 +1419,58 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                       ),
                     );
                     showToast(message: "已收藏到服务器".tl);
+                    logic.serverStatus = ComicServerStatus(
+                      downloaded: logic.serverStatus.downloaded,
+                      favorite: true,
+                    );
+                    logic.update();
                   } catch (e) {
                     showToast(message: e.toString());
                   }
                 }),
-              if (PicaServer.instance.enabled)
-                () {
-                  String? toServerSource(String sourceKey) {
-                    return switch (sourceKey) {
-                      'picacg' => 'picacg',
-                      'ehentai' => 'ehentai',
-                      'jm' => 'jm',
-                      'hitomi' => 'hitomi',
-                      'htmanga' => 'htmanga',
-                      'nhentai' => 'nhentai',
-                      _ => null,
-                    };
-                  }
-
-                  final serverSource = toServerSource(sourceKey);
-                  if (serverSource == null) return const SizedBox.shrink();
-                  return buildItem(
-                    "在服务器下载".tl,
-                    Icons.cloud_download_outlined,
-                    () async {
-                      if (!PicaServer.instance.enabled) {
-                        showToast(message: "未配置服务器".tl);
-                        return;
-                      }
-                      final dialog = showLoadingDialog(
-                        App.globalContext!,
-                        barrierDismissible: false,
-                        allowCancel: false,
-                        message: "创建任务中".tl,
+              if (PicaServer.instance.enabled &&
+                  enableServerActions &&
+                  serverSourceKey != null)
+                buildItem(
+                  logic.serverStatus.downloaded == true
+                      ? "已下载".tl
+                      : "在服务器下载".tl,
+                  logic.serverStatus.downloaded == true
+                      ? Icons.cloud_done
+                      : Icons.cloud_download_outlined,
+                  () async {
+                    final dialog = showLoadingDialog(
+                      App.globalContext!,
+                      barrierDismissible: false,
+                      allowCancel: false,
+                      message: "创建任务中".tl,
+                    );
+                    try {
+                      final safeCover = (cover ?? '').trim();
+                      final coverUrl = safeCover.startsWith('http://') ||
+                              safeCover.startsWith('https://')
+                          ? safeCover
+                          : null;
+                      final taskId =
+                          await PicaServer.instance.createDownloadTask(
+                        source: serverSourceKey!,
+                        target: id,
+                        title: title,
+                        coverUrl: coverUrl,
                       );
-                      try {
-                        final safeCover = (cover ?? '').trim();
-                        final coverUrl = safeCover.startsWith('http://') ||
-                                safeCover.startsWith('https://')
-                            ? safeCover
-                            : null;
-                        final taskId = await PicaServer.instance
-                            .createDownloadTask(
-                          source: serverSource,
-                          target: id,
-                          title: title,
-                          coverUrl: coverUrl,
-                        );
-                        dialog.close();
-                        showToast(message: "${"已创建任务".tl}: $taskId");
-                      } catch (e) {
-                        dialog.close();
-                        showToast(message: "${"创建任务失败".tl}: $e");
-                      }
-                    },
-                  );
-                }(),
+                      dialog.close();
+                      showToast(message: "${"已创建任务".tl}: $taskId");
+                      logic.serverStatus = ComicServerStatus(
+                        downloaded: true,
+                        favorite: logic.serverStatus.favorite,
+                      );
+                      logic.update();
+                    } catch (e) {
+                      dialog.close();
+                      showToast(message: "${"创建任务失败".tl}: $e");
+                    }
+                  },
+                ),
               if (width >= 500) buildItem("下载".tl, Icons.download, download),
               if (downloadManager.isExists(downloadedId))
                 buildItem("上传服务器".tl, Icons.cloud_upload, () async {

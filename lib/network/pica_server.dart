@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pica_comic/base.dart';
 import 'package:pica_comic/foundation/app.dart';
+import 'package:pica_comic/foundation/history.dart';
 import 'package:pica_comic/foundation/log.dart';
 import 'package:pica_comic/network/app_dio.dart';
 import 'package:pica_comic/network/download.dart';
@@ -492,10 +493,26 @@ class PicaServer {
     );
   }
 
+  /// 查询漫画是否已下载到服务器。
+  Future<bool> containsComic({
+    required String source,
+    required String target,
+  }) async {
+    final dio = _dio();
+    final res = await dio.get(
+      '/api/v1/comics/contains',
+      queryParameters: {'source': source, 'target': target},
+    );
+    final data = res.data;
+    if (data is! Map) {
+      return false;
+    }
+    return data['exists'] == true;
+  }
+
   Future<void> addFavorite(ServerFavoriteItem item) async {
     final dio = _dio();
-    await dio.post('/api/v1/favorites', data: item.toCreateMap());
-  }
+    await dio.post('/api/v1/favorites', data: item.toCreateMap());  }
 
   Future<void> removeFavorite({
     required String sourceKey,
@@ -567,8 +584,10 @@ class ServerEp {
   }
 }
 
-class ServerComic {
+class ServerComic with HistoryMixin {
   final String id;
+
+  @override
   final String title;
   final String subtitle;
   final int type;
@@ -626,6 +645,18 @@ class ServerComic {
       return null;
     }
   }
+
+  @override
+  String get target => '$kServerComicPrefix$id';
+
+  @override
+  String get cover => coverUrl ?? '';
+
+  @override
+  String? get subTitle => subtitle;
+
+  @override
+  HistoryType get historyType => HistoryType.picaServer;
 }
 
 class ServerFavoriteFolder {
@@ -659,6 +690,17 @@ class ServerFavoriteContains {
   final String? folder;
 
   const ServerFavoriteContains({required this.exists, required this.folder});
+}
+
+/// 漫画在私人服务器上的状态（未知时字段为 null）。
+class ComicServerStatus {
+  final bool? downloaded;
+
+  final bool? favorite;
+
+  const ComicServerStatus({this.downloaded, this.favorite});
+
+  static const unknown = ComicServerStatus();
 }
 
 class ServerFavoriteItem {
