@@ -724,6 +724,12 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
   /// interface for building more info widget
   Widget? get buildMoreInfo => null;
 
+  /// buildMoreInfo 的渲染位置：true 表示渲染在标签之后。
+  bool get moreInfoBelowTags => false;
+
+  /// 追加到 "..." 菜单的额外操作项。
+  List<PopupMenuEntry> buildMoreMenuItems() => const [];
+
   /// translation tags to CN
   bool get enableTranslationToCN => false;
 
@@ -985,6 +991,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
             Share.share(text);
           },
         ),
+        ...buildMoreMenuItems(),
       ],
     );
   }
@@ -1612,11 +1619,13 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
 
   Iterable<Widget> buildInfoCards(
       ComicPageLogic logic, BuildContext context) sync* {
-    if (buildMoreInfo != null) {
-      yield Padding(
-        padding: const EdgeInsets.fromLTRB(18, 8, 30, 8),
-        child: buildMoreInfo!,
-      );
+    Widget withMoreInfoPadding(Widget child) => Padding(
+          padding: const EdgeInsets.fromLTRB(18, 8, 30, 8),
+          child: child,
+        );
+
+    if (buildMoreInfo != null && !moreInfoBelowTags) {
+      yield withMoreInfoPadding(buildMoreInfo!);
     }
 
     _logic.colorIndex = 0;
@@ -1631,6 +1640,10 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
           ],
         ),
       );
+    }
+
+    if (buildMoreInfo != null && moreInfoBelowTags) {
+      yield withMoreInfoPadding(buildMoreInfo!);
     }
 
     if (uploaderInfo != null) {
