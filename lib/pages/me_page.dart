@@ -122,13 +122,13 @@ class MePage extends StatelessWidget {
 
   Widget buildHistory(BuildContext context) {
     var history = HistoryManager().getRecent();
-    return InkWell(
-      onTap: () => context.to(() => const HistoryPage()),
-      mouseCursor: SystemMouseCursors.click,
-      borderRadius: BorderRadius.circular(12),
-      child: Card.outlined(
-        margin: EdgeInsets.zero,
-        color: Colors.transparent,
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => context.to(() => const HistoryPage()),
+        mouseCursor: SystemMouseCursors.click,
+        borderRadius: BorderRadius.circular(12),
         child: Container(
           margin: EdgeInsets.zero,
           width: double.infinity,
@@ -325,12 +325,13 @@ class _MePageCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Card.outlined(
-        margin: EdgeInsets.zero,
-        color: Colors.transparent,
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        mouseCursor: SystemMouseCursors.click,
+        borderRadius: BorderRadius.circular(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
