@@ -20,6 +20,7 @@ import 'package:pica_comic/foundation/ui_mode.dart';
 import 'package:pica_comic/main.dart';
 import 'package:pica_comic/network/app_dio.dart';
 import 'package:pica_comic/components/components.dart';
+import 'package:pica_comic/pages/favorites/network_favorite_entries.dart';
 import 'package:pica_comic/pages/logs_page.dart';
 import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/io_tools.dart';

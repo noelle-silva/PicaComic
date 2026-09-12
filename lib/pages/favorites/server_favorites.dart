@@ -8,14 +8,15 @@ import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/pages/comic_page.dart';
 import 'package:pica_comic/tools/translations.dart';
 
-class ServerFavoritesPage extends StatefulWidget {
-  const ServerFavoritesPage({super.key});
+/// 服务器收藏内容视图（嵌入收藏页内容区显示）。
+class ServerFavoritesView extends StatefulWidget {
+  const ServerFavoritesView({super.key});
 
   @override
-  State<ServerFavoritesPage> createState() => _ServerFavoritesPageState();
+  State<ServerFavoritesView> createState() => _ServerFavoritesViewState();
 }
 
-class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
+class _ServerFavoritesViewState extends State<ServerFavoritesView> {
   static const int _kServerFavoritesOrderIndex = 5;
 
   bool loading = true;
@@ -292,45 +293,89 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
     );
   }
 
-  Widget _buildFoldersRow() {
+  Widget _buildToolbar() {
     final folderNames =
         folders.map((e) => e.name).where((e) => e.trim().isNotEmpty).toList();
-    if (folderNames.isEmpty) {
-      return Row(
-        children: [
-          const SizedBox(width: 12),
-          Text("暂无收藏夹".tl),
-          const Spacer(),
-          IconButton(
-            tooltip: "创建收藏夹".tl,
-            onPressed: _createFolder,
-            icon: const Icon(Icons.create_new_folder_outlined),
-          ),
-        ],
-      );
-    }
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          const SizedBox(width: 8),
-          for (final name in folderNames)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              child: ChoiceChip(
-                label: Text(name),
-                selected: name == selectedFolder,
-                onSelected: (_) => _loadItems(name),
-              ),
+    return Row(
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                const SizedBox(width: 8),
+                if (folderNames.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text("暂无收藏夹".tl),
+                  ),
+                for (final name in folderNames)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    child: ChoiceChip(
+                      label: Text(name),
+                      selected: name == selectedFolder,
+                      onSelected: (_) => _loadItems(name),
+                    ),
+                  ),
+                _buildToolbarAction(
+                  tooltip: "创建收藏夹".tl,
+                  onPressed: _createFolder,
+                  icon: const Icon(Icons.add),
+                ),
+                const SizedBox(width: 4),
+              ],
             ),
-          IconButton(
-            tooltip: "创建收藏夹".tl,
-            onPressed: _createFolder,
-            icon: const Icon(Icons.add),
           ),
-          const SizedBox(width: 8),
-        ],
-      ),
+        ),
+        _buildToolbarAction(
+          tooltip: "管理收藏夹".tl,
+          onPressed: folders.isEmpty ? null : _openFolderManager,
+          icon: const Icon(Icons.folder_outlined),
+        ),
+        _buildToolbarAction(
+          tooltip: reorderMode ? "完成排序".tl : "排序".tl,
+          onPressed: items.isEmpty
+              ? null
+              : () {
+                  final next = !reorderMode;
+                  setState(() => reorderMode = next);
+                  if (next) {
+                    showToast(
+                      message:
+                          App.isDesktop ? "拖动以排序".tl : "长按并拖动以排序".tl,
+                    );
+                  }
+                },
+          icon: Icon(reorderMode ? Icons.check : Icons.swap_vert),
+        ),
+        _buildToolbarAction(
+          tooltip: _descOrder ? "倒序".tl : "正序".tl,
+          onPressed:
+              (items.isEmpty || reorderMode) ? null : _toggleDisplayOrder,
+          icon: Icon(
+            _descOrder ? Icons.arrow_downward : Icons.arrow_upward,
+          ),
+        ),
+        _buildToolbarAction(
+          tooltip: "刷新".tl,
+          onPressed: _load,
+          icon: const Icon(Icons.refresh),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildToolbarAction({
+    required String tooltip,
+    required VoidCallback? onPressed,
+    required Widget icon,
+  }) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: icon,
+      visualDensity: VisualDensity.compact,
     );
   }
 
@@ -413,64 +458,24 @@ class _ServerFavoritesPageState extends State<ServerFavoritesPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text("服务器收藏".tl),
-        actions: [
-          IconButton(
-            tooltip: "管理收藏夹".tl,
-            onPressed: folders.isEmpty ? null : _openFolderManager,
-            icon: const Icon(Icons.folder_outlined),
+    if (loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (error != null) {
+      return NetworkError(message: error!, retry: _load, withAppbar: false);
+    }
+    return Column(
+      children: [
+        const SizedBox(height: 8),
+        SizedBox(height: 44, child: _buildToolbar()),
+        const Divider(height: 1),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _load,
+            child: _buildGrid(),
           ),
-          IconButton(
-            tooltip: reorderMode ? "完成排序".tl : "排序".tl,
-            onPressed: items.isEmpty
-                ? null
-                : () {
-                    final next = !reorderMode;
-                    setState(() => reorderMode = next);
-                    if (next) {
-                      showToast(
-                        message: App.isDesktop ? "拖动以排序".tl : "长按并拖动以排序".tl,
-                      );
-                    }
-                  },
-            icon: Icon(reorderMode ? Icons.check : Icons.swap_vert),
-          ),
-          Tooltip(
-            message: (_descOrder ? "倒序".tl : "正序".tl),
-            child: IconButton(
-              onPressed:
-                  (items.isEmpty || reorderMode) ? null : _toggleDisplayOrder,
-              icon: Icon(
-                _descOrder ? Icons.arrow_downward : Icons.arrow_upward,
-              ),
-            ),
-          ),
-          IconButton(
-            tooltip: "刷新".tl,
-            onPressed: _load,
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
-      ),
-      body: loading
-          ? const Center(child: CircularProgressIndicator())
-          : error != null
-              ? NetworkError(message: error!, retry: _load)
-              : Column(
-                  children: [
-                    const SizedBox(height: 8),
-                    SizedBox(height: 44, child: _buildFoldersRow()),
-                    const Divider(height: 1),
-                    Expanded(
-                      child: RefreshIndicator(
-                        onRefresh: _load,
-                        child: _buildGrid(),
-                      ),
-                    ),
-                  ],
-                ),
+        ),
+      ],
     );
   }
 }

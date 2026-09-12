@@ -221,8 +221,7 @@ Widget buildExploreSettings(BuildContext context, bool popUp) {
 
 Map<String, String> networkFavorites(){
   return {
-    for(var source in ComicSource.sources)
-      if(source.favoriteData != null)
-        source.key: source.favoriteData!.title.tl
+    for(var entry in allNetworkFavoriteEntries())
+      entry.key: entry.title.tl
   };
 }

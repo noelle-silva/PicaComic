@@ -63,3 +63,6 @@ const builtInSources = [
   "htmanga",
   "nhentai"
 ];
+
+/// 服务器收藏在网络收藏页面配置中的标识。
+const kServerFavoritesKey = "pica_server";

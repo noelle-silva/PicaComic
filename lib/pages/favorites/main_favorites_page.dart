@@ -4,7 +4,6 @@ import "package:collection/collection.dart";
 import "package:flutter/material.dart";
 import "package:flutter_reorderable_grid_view/widgets/reorderable_builder.dart";
 import "package:pica_comic/base.dart";
-import "package:pica_comic/comic_source/comic_source.dart";
 import 'package:pica_comic/components/components.dart';
 import "package:pica_comic/foundation/app.dart";
 import "package:pica_comic/foundation/local_favorites.dart";
@@ -18,7 +17,7 @@ import "../../tools/io_tools.dart";
 import "local_favorites.dart";
 import "local_to_server_import.dart";
 import "local_search_page.dart";
-import "network_favorite_page.dart";
+import "network_favorite_entries.dart";
 
 class FavoritesPageController extends StateController {
   String? current;
@@ -27,7 +26,7 @@ class FavoritesPageController extends StateController {
 
   bool selectingFolder = true;
 
-  FavoriteData? networkData;
+  NetworkFavoriteEntry? networkEntry;
 
   var selectedComics = <FavoriteItem>[];
 
@@ -52,11 +51,9 @@ class FavoritesPageController extends StateController {
       current = null;
     }
     if (isNetwork ?? false) {
-      final folders =
-          appdata.settings[68].split(',').map((e) => getFavoriteDataOrNull(e));
-      networkData =
-          folders.firstWhereOrNull((element) => element?.title == current);
-      if (networkData == null) {
+      networkEntry = configuredNetworkFavoriteEntries()
+          .firstWhereOrNull((element) => element.title == current);
+      if (networkEntry == null) {
         current = null;
         selectingFolder = true;
         isNetwork = null;
@@ -359,24 +356,22 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
   }
 
   Widget buildNetwork() {
-    var folders = appdata.appSettings.networkFavorites
-        .map((e) => getFavoriteDataOrNull(e));
-    folders = folders.whereType<FavoriteData>();
+    final entries = configuredNetworkFavoriteEntries();
     return SliverGrid(
       gridDelegate: const SliverGridDelegateWithFixedHeight(
         maxCrossAxisExtent: 240,
         itemHeight: 48,
       ),
       delegate: SliverChildBuilderDelegate((context, index) {
-        final data = folders.elementAt(index);
+        final entry = entries[index];
         return InkWell(
           onTap: () {
-            controller.current = data?.title;
+            controller.current = entry.title;
             controller.isNetwork = true;
             controller.selectingFolder = false;
-            controller.networkData = data;
+            controller.networkEntry = entry;
             controller.update();
-            appdata.implicitData[0] = "0;1;${data?.title ?? ""}";
+            appdata.implicitData[0] = "0;1;${entry.title}";
             appdata.writeImplicitData();
           },
           borderRadius: BorderRadius.circular(8),
@@ -388,11 +383,11 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
                 color: Theme.of(context).colorScheme.secondary,
               ),
               const SizedBox(width: 8),
-              Text(data?.title != null ? data!.title.tl : "未知".tl,),
+              Text(entry.title.tl),
             ],
           ),
         );
-      }, childCount: folders.length),
+      }, childCount: entries.length),
     );
   }
 
@@ -573,10 +568,8 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
     if (controller.current == null) {
       return const SizedBox();
     } else if (controller.isNetwork!) {
-      return NetworkFavoritePage(
-        controller.networkData!,
-        key: Key(controller.current ?? ""),
-      );
+      return controller.networkEntry!
+          .buildContent(Key(controller.current ?? ""));
     } else {
       var count = LocalFavoritesManager().count(controller.current!);
       return ComicsPageView(

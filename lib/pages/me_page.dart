@@ -8,7 +8,6 @@ import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/network/pica_server_auth_sync.dart';
 import 'accounts_page.dart';
 import 'package:pica_comic/pages/download_page.dart';
-import 'favorites/server_favorites.dart';
 import 'package:pica_comic/pages/tools.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'history_page.dart';
@@ -62,10 +61,6 @@ class MePage extends StatelessWidget {
                               height: 12,
                             ),
                             buildServerAuthSync(context, width),
-                            const SizedBox(
-                              height: 12,
-                            ),
-                            buildServerFavorites(context, width),
                           ],
                         ),
                       ),
@@ -109,10 +104,6 @@ class MePage extends StatelessWidget {
                     height: 12,
                   ),
                   buildServerAuthSync(context, width),
-                  const SizedBox(
-                    height: 12,
-                  ),
-                  buildServerFavorites(context, width),
                   const SizedBox(
                     height: 12,
                   ),
@@ -289,15 +280,6 @@ class MePage extends StatelessWidget {
           showToast(message: e.toString());
         }
       },
-    );
-  }
-
-  Widget buildServerFavorites(BuildContext context, double width) {
-    return _MePageCard(
-      icon: const Icon(Icons.collections_bookmark_outlined),
-      title: "服务器收藏".tl,
-      description: "查看服务器上的收藏".tl,
-      onTap: () => context.to(() => const ServerFavoritesPage()),
     );
   }
 

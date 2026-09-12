@@ -471,11 +471,8 @@ void _validatePages() {
       appdata.appSettings.pageTabs.where((e) => e.isNotEmpty).toList();
   var networkFavorites = appdata.appSettings.networkFavorites;
 
-  var totalNetworkFavorites = ComicSource.sources
-      .map((e) => e.favoriteData?.key)
-      .where((element) => element != null)
-      .map((e) => e!)
-      .toList();
+  var totalNetworkFavorites =
+      allNetworkFavoriteEntries().map((e) => e.key).toList();
 
   pageTabs.removeWhere((e) => !(PageTab.tryParse(e)?.isValid ?? false));
   for (var page in List.from(networkFavorites)) {

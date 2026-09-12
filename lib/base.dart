@@ -132,6 +132,7 @@ class Appdata {
     webUA, // UA
     "", // private server api key
     "0", // 服务器收藏显示顺序: 0-正序, 1-倒序
+    "0", // 服务器收藏已纳入网络收藏区(迁移标记)
   ];
 
   void writeImplicitData() async {
