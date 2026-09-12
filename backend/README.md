@@ -35,6 +35,7 @@ dart run bin/server.dart
 - `PICA_FILE_CONCURRENT_HITOMI`：可选；覆盖 `hitomi` 的并行数
 - `PICA_FILE_CONCURRENT_HTMANGA`：可选；覆盖 `htmanga` 的并行数
 - `PICA_FILE_CONCURRENT_NHENTAI`：可选；覆盖 `nhentai` 的并行数
+- `PICA_AUTH_KEY`：可选；登录态数据的落盘加密密钥（AES-256-GCM）。不设置时自动生成 `<PICA_STORAGE>/auth.key`；设置后请妥善保管，更换密钥会导致旧记录不可读（需从 App 重新同步）
 
 ## .env（推荐）
 
@@ -45,9 +46,9 @@ dart run bin/server.dart
 ## API（v1）
 
 - `GET /api/v1/health`
-- `PUT /api/v1/auth/{source}`：保存该漫画源的会话/配置（JSON，明文存储）
+- `PUT /api/v1/auth/{source}`：保存该漫画源的会话/配置（JSON，落盘加密）
 - `GET /api/v1/auth/{source}`：查询该漫画源是否已配置
-- `GET /api/v1/auth/{source}/data`：读取该漫画源已保存的会话内容（JSON，明文）
+- `GET /api/v1/auth/{source}/data`：读取该漫画源已保存的会话内容（JSON，自动解密）
 - `GET /api/v1/auth`：列出已配置的漫画源
 - `POST /api/v1/tasks/download`：创建“服务端下载并入库”任务（异步，JSON）
   - `source`：`picacg | ehentai | jm | hitomi | htmanga | nhentai`
@@ -93,6 +94,12 @@ dart run bin/server.dart
 ## auth/{source} 约定（KISS）
 
 后端不会自动登录/续期；会话失效时任务会失败，需要客户端重新 `PUT /api/v1/auth/{source}` 更新。
+
+登录态数据在服务器上**加密存储**（AES-256-GCM）：客户端读写仍为明文 JSON，加解密发生在服务器内部。密钥来自 `PICA_AUTH_KEY`，未设置时自动生成 `<PICA_STORAGE>/auth.key`。
+
+> 安全提醒：请务必在服务器前置 HTTPS（反向代理），否则传输链路仍可能被监听。加密存储只能防数据库文件/备份被直接读取，不能防服务器被完整入侵。
+>
+> 数据兼容：升级到加密存储后，旧的明文记录无法读取，需要在 App 中删除后重新同步一次。
 
 - `picacg`
   - 必填：`token`

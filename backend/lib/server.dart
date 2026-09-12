@@ -14,6 +14,7 @@ import 'package:path/path.dart' as p;
 import 'package:pointycastle/api.dart';
 import 'package:pointycastle/block/aes.dart';
 import 'package:pointycastle/block/modes/ecb.dart';
+import 'package:pointycastle/block/modes/gcm.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import 'package:sqlite3/sqlite3.dart';
@@ -636,9 +637,78 @@ class _DownloadedComicData {
   });
 }
 
+/// auth 数据落盘加密（方案 A：服务器侧加密，客户端无感）。
+///
+/// 密钥优先取环境变量 `PICA_AUTH_KEY`（任意字符串，SHA-256 派生）；
+/// 未配置时自动生成 `<storage>/auth.key`，保证开箱即用。
+/// 存储格式：`enc:v1:` + base64(nonce(12) || ciphertext || tag(16))。
+class _AuthCipher {
+  static const _prefix = 'enc:v1:';
+
+  final Uint8List _key;
+
+  _AuthCipher(this._key);
+
+  static _AuthCipher load(Directory storage) {
+    final fromEnv = (Platform.environment['PICA_AUTH_KEY'] ?? '').trim();
+    if (fromEnv.isNotEmpty) {
+      return _AuthCipher(
+          Uint8List.fromList(sha256.convert(utf8.encode(fromEnv)).bytes));
+    }
+    final keyFile = File(p.join(storage.path, 'auth.key'));
+    if (!keyFile.existsSync()) {
+      final random = Random.secure();
+      final bytes = Uint8List.fromList(
+          List<int>.generate(32, (_) => random.nextInt(256)));
+      keyFile.writeAsStringSync(base64.encode(bytes));
+    }
+    final decoded = base64.decode(keyFile.readAsStringSync().trim());
+    if (decoded.length != 32) {
+      throw StateError('invalid auth key file: ${keyFile.path}');
+    }
+    return _AuthCipher(Uint8List.fromList(decoded));
+  }
+
+  String encrypt(Map<String, dynamic> data) {
+    final random = Random.secure();
+    final nonce =
+        Uint8List.fromList(List<int>.generate(12, (_) => random.nextInt(256)));
+    final cipher = GCMBlockCipher(AESEngine())
+      ..init(
+          true, AEADParameters(KeyParameter(_key), 128, nonce, Uint8List(0)));
+    final sealed =
+        cipher.process(Uint8List.fromList(utf8.encode(jsonEncode(data))));
+    final payload = Uint8List(nonce.length + sealed.length)
+      ..setRange(0, nonce.length, nonce)
+      ..setRange(nonce.length, nonce.length + sealed.length, sealed);
+    return '$_prefix${base64.encode(payload)}';
+  }
+
+  /// 解密失败（数据损坏、密钥不匹配或旧明文格式）返回 null。
+  Map<String, dynamic>? decrypt(String stored) {
+    if (!stored.startsWith(_prefix)) return null;
+    try {
+      final payload = base64.decode(stored.substring(_prefix.length));
+      if (payload.length < 12 + 16) return null;
+      final nonce = Uint8List.sublistView(payload, 0, 12);
+      final sealed = Uint8List.sublistView(payload, 12);
+      final cipher = GCMBlockCipher(AESEngine())
+        ..init(false,
+            AEADParameters(KeyParameter(_key), 128, nonce, Uint8List(0)));
+      final plain = cipher.process(sealed);
+      final decoded = jsonDecode(utf8.decode(plain));
+      if (decoded is! Map) return null;
+      return Map<String, dynamic>.from(decoded);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
 class _TaskRunner {
   final Database db;
   final Directory storage;
+  final _AuthCipher authCipher;
 
   final Queue<String> _queue = Queue();
   final Set<String> _running = <String>{};
@@ -649,6 +719,7 @@ class _TaskRunner {
   _TaskRunner({
     required this.db,
     required this.storage,
+    required this.authCipher,
   });
 
   int get maxConcurrent => _maxConcurrent;
@@ -1275,14 +1346,7 @@ class _TaskRunner {
       [source],
     ).firstOrNull;
     if (row == null) return null;
-    final dataJson = (row['data_json'] as String);
-    try {
-      final decoded = jsonDecode(dataJson);
-      if (decoded is! Map) return null;
-      return Map<String, dynamic>.from(decoded);
-    } catch (_) {
-      return null;
-    }
+    return authCipher.decrypt((row['data_json'] as String));
   }
 
   Future<_DownloadedComicData> _downloadBySource({
@@ -3348,11 +3412,17 @@ Handler buildHandler({
   final storage = Directory(storageDir);
   storage.createSync(recursive: true);
 
+  final authCipher = _AuthCipher.load(storage);
+
   final dbFile = File(p.join(storage.path, 'library.db'));
   final db = sqlite3.open(dbFile.path);
   _initDb(db);
 
-  final taskRunner = _TaskRunner(db: db, storage: storage);
+  final taskRunner = _TaskRunner(
+    db: db,
+    storage: storage,
+    authCipher: authCipher,
+  );
   taskRunner.markStaleRunningTasksFailed();
   taskRunner.enqueueQueuedFromDb();
 
@@ -3863,7 +3933,7 @@ Handler buildHandler({
       insert or replace into auth_sessions (source, data_json, updated_at)
       values (?, ?, ?)
       ''',
-      [source, jsonEncode(json), now],
+      [source, authCipher.encrypt(json), now],
     );
     return _json(200, {'ok': true});
   });
@@ -3920,7 +3990,7 @@ Handler buildHandler({
       'source': source,
       'exists': true,
       'updatedAt': row['updated_at'],
-      'data': _tryDecodeJson(row['data_json']),
+      'data': authCipher.decrypt(row['data_json'] as String),
     });
   });
 
