@@ -467,71 +467,52 @@ class _BuiltInSourcesState extends State<_BuiltInSources> {
 }
 
 void _validatePages() {
-  var explorePages = appdata.appSettings.explorePages;
-  var categoryPages = appdata.appSettings.categoryPages;
+  var pageTabs =
+      appdata.appSettings.pageTabs.where((e) => e.isNotEmpty).toList();
   var networkFavorites = appdata.appSettings.networkFavorites;
 
-  var totalExplorePages = ComicSource.sources
-      .map((e) => e.explorePages.map((e) => e.title))
-      .expand((element) => element)
-      .toList();
-  var totalCategoryPages = ComicSource.sources
-      .map((e) => e.categoryData?.key)
-      .where((element) => element != null)
-      .map((e) => e!)
-      .toList();
   var totalNetworkFavorites = ComicSource.sources
       .map((e) => e.favoriteData?.key)
       .where((element) => element != null)
       .map((e) => e!)
       .toList();
 
-  for (var page in List.from(explorePages)) {
-    if (!totalExplorePages.contains(page)) {
-      explorePages.remove(page);
-    }
-  }
-  for (var page in List.from(categoryPages)) {
-    if (!totalCategoryPages.contains(page)) {
-      categoryPages.remove(page);
-    }
-  }
+  pageTabs.removeWhere((e) => !(PageTab.tryParse(e)?.isValid ?? false));
   for (var page in List.from(networkFavorites)) {
     if (!totalNetworkFavorites.contains(page)) {
       networkFavorites.remove(page);
     }
   }
 
-  appdata.appSettings.explorePages = explorePages;
-  appdata.appSettings.categoryPages = categoryPages;
+  appdata.appSettings.pageTabs = pageTabs;
   appdata.appSettings.networkFavorites = networkFavorites;
 
   appdata.updateSettings();
 }
 
 void _addAllPagesWithComicSource(ComicSource source) {
-  var explorePages = appdata.appSettings.explorePages;
-  var categoryPages = appdata.appSettings.categoryPages;
+  var pageTabs =
+      appdata.appSettings.pageTabs.where((e) => e.isNotEmpty).toList();
   var networkFavorites = appdata.appSettings.networkFavorites;
 
-  if (source.explorePages.isNotEmpty) {
-    for (var page in source.explorePages) {
-      if (!explorePages.contains(page.title)) {
-        explorePages.add(page.title);
-      }
+  for (var page in source.explorePages) {
+    var serialized = PageTab.explore(page.title).serialized;
+    if (!pageTabs.contains(serialized)) {
+      pageTabs.add(serialized);
     }
   }
-  if (source.categoryData != null &&
-      !categoryPages.contains(source.categoryData!.key)) {
-    categoryPages.add(source.categoryData!.key);
+  if (source.categoryData != null) {
+    var serialized = PageTab.category(source.categoryData!.key).serialized;
+    if (!pageTabs.contains(serialized)) {
+      pageTabs.add(serialized);
+    }
   }
   if (source.favoriteData != null &&
       !networkFavorites.contains(source.favoriteData!.key)) {
     networkFavorites.add(source.favoriteData!.key);
   }
 
-  appdata.appSettings.explorePages = explorePages.toSet().toList();
-  appdata.appSettings.categoryPages = categoryPages.toSet().toList();
+  appdata.appSettings.pageTabs = pageTabs.toSet().toList();
   appdata.appSettings.networkFavorites = networkFavorites.toSet().toList();
 
   appdata.updateSettings();

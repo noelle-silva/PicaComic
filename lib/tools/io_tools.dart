@@ -504,6 +504,7 @@ Future<bool> importData([String? filePath]) async {
         LogLevel.error, "Appdata", "appdata.readDataFromJson(json) failed");
     return false;
   }
+  await migratePageTabSettings();
   await LocalFavoritesManager().readData();
   LocalFavoritesManager().updateUI();
   await HistoryManager().tryUpdateDb();

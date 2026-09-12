@@ -1,13 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:pica_comic/base.dart';
 import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/network/base_comic.dart';
 import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/pages/category_comics_page.dart';
+import 'package:pica_comic/pages/category_page.dart';
 import 'package:pica_comic/pages/search_result_page.dart';
-import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/translations.dart';
 
 class ExplorePage extends StatefulWidget {
@@ -25,32 +24,25 @@ class _ExplorePageState extends State<ExplorePage>
 
   double location = 0;
 
-  var pages = appdata.appSettings.explorePages;
+  var tabs = <PageTab>[];
 
   @override
   void initState() {
-    pages = appdata.appSettings.explorePages;
-    var all = ComicSource.sources.map((e) => e.explorePages).expand((e) => e.map((e) => e.title)).toList();
-    pages = pages.where((e) => all.contains(e)).toList();
-    if(pages.isEmpty && appdata.appSettings.explorePages.isNotEmpty) {
-      if(appdata.appSettings.explorePages.first.isNum) {
-        // is odd data, update
-        appdata.appSettings.explorePages = all;
-        pages = all;
-        appdata.updateSettings();
-      }
-    }
+    tabs = PageTab.configured;
     controller = TabController(
-      length: pages.length,
+      length: tabs.length,
       vsync: this,
     );
     super.initState();
   }
 
   void refresh() {
-    int page = controller.index;
-    String currentPageId = pages[page];
-    StateController.find<SimpleController>(tag: currentPageId).refresh();
+    if (tabs.isEmpty) {
+      return;
+    }
+    StateController.findOrNull<SimpleController>(
+            tag: tabs[controller.index].serialized)
+        ?.refresh();
   }
 
   Widget buildFAB() => Material(
@@ -62,17 +54,23 @@ class _ExplorePageState extends State<ExplorePage>
         ),
       );
 
-  Tab buildTab(String i) {
-    return Tab(text: i.tl, key: Key(i));
+  Tab buildTab(PageTab tab) {
+    return Tab(text: tab.displayTitle.tl, key: Key(tab.serialized));
   }
 
-  Widget buildBody(String i) => _SingleExplorePage(i, key: Key(i));
+  Widget buildBody(PageTab tab) {
+    return switch (tab.type) {
+      PageTabType.explore =>
+        _SingleExplorePage(tab.id, key: Key(tab.serialized)),
+      PageTabType.category => _CategoryTab(tab.id, key: Key(tab.serialized)),
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
     Widget tabBar = Material(
       child: FilledTabBar(
-        tabs: pages.map((e) => buildTab(e)).toList(),
+        tabs: tabs.map((e) => buildTab(e)).toList(),
         controller: controller,
       ),
     );
@@ -115,7 +113,7 @@ class _ExplorePageState extends State<ExplorePage>
                   removeTop: true,
                   child: TabBarView(
                     controller: controller,
-                    children: pages
+                    children: tabs
                         .map((e) => buildBody(e))
                         .toList(),
                   ),
@@ -258,7 +256,7 @@ class _SingleExplorePageState extends StateWithController<_SingleExplorePage> {
   }
 
   @override
-  Object? get tag => widget.title;
+  Object? get tag => PageTab.explore(widget.title).serialized;
 
   @override
   void refresh() {
@@ -422,3 +420,24 @@ Iterable<Widget> _buildExplorePagePart(
   yield buildTitle(part);
   yield buildComics(part);
 }
+
+/// 探索页中的分类栏：内容为分类标签墙。
+///
+/// 通过 [StateWithController] 与探索栏共享同一套刷新机制（FAB 刷新当前栏）。
+class _CategoryTab extends StatefulWidget {
+  const _CategoryTab(this.categoryKey, {super.key});
+
+  final String categoryKey;
+
+  @override
+  State<_CategoryTab> createState() => _CategoryTabState();
+}
+
+class _CategoryTabState extends StateWithController<_CategoryTab> {
+  @override
+  Object? get tag => PageTab.category(widget.categoryKey).serialized;
+
+  @override
+  Widget build(BuildContext context) => CategoryPage(widget.categoryKey);
+}
+

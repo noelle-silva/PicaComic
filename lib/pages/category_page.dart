@@ -1,64 +1,11 @@
 import 'package:pica_comic/comic_source/comic_source.dart';
-import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:flutter/material.dart';
 import 'package:pica_comic/pages/ranking_page.dart';
 import 'package:pica_comic/pages/search_result_page.dart';
 import 'package:pica_comic/tools/tags_translation.dart';
 import 'package:pica_comic/pages/category_comics_page.dart';
-import 'package:pica_comic/base.dart';
 import 'package:pica_comic/tools/translations.dart';
-
-class AllCategoryPage extends StatelessWidget {
-  const AllCategoryPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return StateBuilder<SimpleController>(
-      tag: "category",
-      init: SimpleController(),
-      builder: (controller) {
-        var categories = appdata.appSettings.categoryPages;
-        var allCategories = ComicSource.sources
-            .map((e) => e.categoryData?.key)
-            .where((element) => element != null)
-            .map((e) => e!)
-            .toList();
-        categories = categories.where((element) => allCategories.contains(element)).toList();
-
-        return Material(
-          child: DefaultTabController(
-            length: categories.length,
-            key: Key(categories.toString()),
-            child: Column(
-              children: [
-                FilledTabBar(
-                  tabs: categories.map((e) {
-                    String title = e;
-                    try {
-                      title = getCategoryDataWithKey(e).title;
-                    } catch (e) {
-                      //
-                    }
-                    return Tab(
-                      text: title.tl,
-                      key: Key(e),
-                    );
-                  }).toList(),
-                ),
-                Expanded(
-                  child: TabBarView(
-                      children:
-                          categories.map((e) => CategoryPage(e)).toList()),
-                )
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
 
 typedef ClickTagCallback = void Function(String, String?);
 

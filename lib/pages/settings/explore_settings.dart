@@ -12,7 +12,7 @@ Widget buildExploreSettings(BuildContext context, bool popUp) {
       SelectSettingWithAppdata(
         icon: const Icon(Icons.home_outlined),
         title: "初始页面".tl,
-        options: ["我".tl, "收藏".tl, "探索".tl, "分类".tl],
+        options: ["我".tl, "收藏".tl, "探索".tl],
         settingsIndex: 23,
       ),
       NewPageSetting(
@@ -25,12 +25,6 @@ Widget buildExploreSettings(BuildContext context, bool popUp) {
           title: "探索页面".tl,
           onTap: () => setExplorePages(context),
           icon:  const Icon(Icons.explore_outlined)
-      ),
-      NewPageSetting(
-          title: "分类页面".tl,
-          onTap: () => showPopUpWidget(App.globalContext!,
-              MultiPagesFilter("分类页面".tl, 67, categoryPages())),
-          icon:  const Icon(Icons.account_tree_outlined)
       ),
       SelectSettingWithAppdata(
         icon: const Icon(Icons.list),
@@ -222,14 +216,6 @@ Widget buildExploreSettings(BuildContext context, bool popUp) {
       Padding(padding: EdgeInsets.only(bottom: MediaQuery.of(context).padding.bottom))
     ],
   );
-}
-
-Map<String, String> categoryPages(){
-  return {
-    for(var source in ComicSource.sources)
-      if(source.categoryData != null)
-        source.categoryData!.key: source.categoryData!.title.tl
-  };
 }
 
 Map<String, String> networkFavorites(){

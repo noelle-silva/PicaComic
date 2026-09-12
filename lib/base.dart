@@ -96,7 +96,7 @@ class Appdata {
     "0", //64 启用侧边翻页
     "0", //65 本地收藏显示数量
     "0", //66 缩略图布局: 覆盖, 容纳
-    "picacg,ehentai,jm,htmanga,nhentai", //67 分类页面
+    "", //67 [废弃]分类页面(已并入页面栏列表)
     "picacg,ehentai,jm,htmanga,nhentai", //68 收藏页面
     "0", //69 自动添加语言筛选
     "0", //70 反转点按识别
@@ -106,7 +106,7 @@ class Appdata {
     "1.0", //74 图片收藏大小
     "", //75 eh profile
     "0", //76 阅读器内固定屏幕方向: 0-禁用, 1-横屏, 2-竖屏
-    "picacg,Eh主页,Eh热门,禁漫主页,禁漫最新,hitomi,绅士漫画,nhentai", //77 探索页面
+    "explore:picacg,explore:Eh主页,explore:Eh热门,explore:禁漫主页,explore:禁漫最新,explore:hitomi,explore:绅士漫画,explore:nhentai,category:picacg,category:ehentai,category:jm,category:htmanga,category:nhentai", //77 页面栏列表(格式 "<type>:<id>", 探索+分类)
     "0", //78 已下载的eh漫画优先显示副标题
     "6", //79 下载并行
     "1", //80 启动时检查自定义漫画源的更新
@@ -371,15 +371,17 @@ class _Settings {
   String get jmImgUrlIndex =>
       int.parse(appdata.settings[37]) < 4 ? appdata.settings[37] : "0";
 
-  List<String> get explorePages => appdata.settings[77].split(',');
+  /// 页面栏统一列表（探索栏+分类栏），序列化格式为 "<type>:<id>"，见 PageTab。事实源唯一：settings[77]。
+  List<String> get pageTabs => appdata.settings[77].split(',');
 
-  set explorePages(List<String> pages) {
+  set pageTabs(List<String> pages) {
     appdata.settings[77] = pages.join(',');
   }
 
-  List<String> get categoryPages => appdata.settings[67].split(',');
+  /// [废弃] 旧版分类页面配置，仅在数据迁移时读取，迁移后置空。
+  List<String> get legacyCategoryPages => appdata.settings[67].split(',');
 
-  set categoryPages(List<String> pages) {
+  set legacyCategoryPages(List<String> pages) {
     appdata.settings[67] = pages.join(',');
   }
 

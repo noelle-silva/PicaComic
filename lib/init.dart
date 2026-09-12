@@ -101,6 +101,7 @@ Future<void> _checkOldData() async {
       appdata.settings[40] = '40';
     }
     appdata.blockingKeyword.removeWhere((value) => value.isEmpty);
+    await migratePageTabSettings();
 
     if (io.Directory("${App.dataPath}/comic_source/cookies/").existsSync() ||
         io.Directory("${App.dataPath}/eh_cookies").existsSync() ||

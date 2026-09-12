@@ -380,23 +380,29 @@ class _SetExplorePagesState extends State<SetExplorePages> {
     super.dispose();
   }
 
-  Widget buildItem(String i) {
+  List<String> get _configured =>
+      appdata.appSettings.pageTabs.where((e) => e.isNotEmpty).toList();
+
+  String displayTitle(String serialized) =>
+      PageTab.tryParse(serialized)?.displayTitle ?? serialized;
+
+  Widget buildItem(String serialized) {
     Widget removeButton = Padding(
       padding: const EdgeInsets.only(right: 8),
       child: IconButton(
           onPressed: () {
             setState(() {
-              var config = appdata.appSettings.explorePages;
-              config.remove(i);
-              appdata.appSettings.explorePages = config;
+              var config = _configured;
+              config.remove(serialized);
+              appdata.appSettings.pageTabs = config;
             });
           },
           icon: const Icon(Icons.delete)),
     );
 
     return ListTile(
-      title: Text(i.tl),
-      key: Key(i),
+      title: Text(displayTitle(serialized).tl),
+      key: Key(serialized),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -407,15 +413,15 @@ class _SetExplorePagesState extends State<SetExplorePages> {
     );
   }
 
-  Widget buildNotShowPageSelector(String i, BuildContext context) {
-    var widget = ListTile(title: Text(i.tl), key: Key(i));
+  Widget buildNotShowPageSelector(PageTab tab, BuildContext context) {
+    var widget =
+        ListTile(title: Text(tab.displayTitle.tl), key: Key(tab.serialized));
     return InkWell(
       child: widget,
       onTap: () {
         App.back(context);
         setState(() {
-          appdata.appSettings.explorePages = appdata.appSettings.explorePages
-            ..add(i);
+          appdata.appSettings.pageTabs = _configured..add(tab.serialized);
         });
       },
     );
@@ -427,21 +433,12 @@ class _SetExplorePagesState extends State<SetExplorePages> {
 
   @override
   Widget build(BuildContext context) {
-    var notShowPages = <String>[];
-    var allPages = <String>[];
-    for (var source in ComicSource.sources) {
-      for (var page in source.explorePages) {
-        allPages.add(page.title);
-      }
-    }
-    for (var i in allPages) {
-      if (!appdata.appSettings.explorePages.contains(i)) {
-        notShowPages.add(i);
-      }
-    }
+    var configured = _configured;
+    var notShowPages = PageTab.allAvailable
+        .where((e) => !configured.contains(e.serialized))
+        .toList();
 
-    var tiles =
-        appdata.appSettings.explorePages.map((e) => buildItem(e)).toList();
+    var tiles = configured.map((e) => buildItem(e)).toList();
 
     var view = ReorderableBuilder(
       key: reorderWidgetKey,
@@ -461,8 +458,7 @@ class _SetExplorePagesState extends State<SetExplorePages> {
       ),
       onReorder: (reorderFunc) {
         setState(() {
-          appdata.appSettings.explorePages =
-              List.from(reorderFunc(appdata.appSettings.explorePages));
+          appdata.appSettings.pageTabs = List.from(reorderFunc(_configured));
         });
       },
       children: tiles,

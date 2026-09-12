@@ -28,6 +28,8 @@ part 'category.dart';
 
 part 'favorites.dart';
 
+part 'page_tabs.dart';
+
 part 'parser.dart';
 
 /// build comic list, [Res.subData] should be maxPage or null if there is no limit.

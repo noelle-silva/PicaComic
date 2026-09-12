@@ -8,7 +8,6 @@ import 'package:pica_comic/tools/app_links.dart';
 import 'package:pica_comic/tools/background_service.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'category_page.dart';
 import 'explore_page.dart';
 import 'favorites/main_favorites_page.dart';
 import 'pre_search_page.dart';
@@ -84,9 +83,8 @@ class MainPageState extends State<MainPage> {
         const MePage(),
         FavoritesPage(),
         ExplorePage(
-          key: Key(appdata.appSettings.explorePages.length.toString()),
+          key: Key(appdata.settings[77]),
         ),
-        const AllCategoryPage(),
       ];
 
   void _login() {
@@ -210,7 +208,8 @@ class MainPageState extends State<MainPage> {
   @override
   Widget build(BuildContext context) {
     return NaviPane(
-      initialPage: int.parse(appdata.settings[23]),
+      initialPage:
+          int.parse(appdata.settings[23]).clamp(0, _pages.length - 1),
       observer: _observer,
       paneItems: [
         PaneItemEntry(
@@ -225,10 +224,6 @@ class MainPageState extends State<MainPage> {
             label: '探索'.tl,
             icon: Icons.explore_outlined,
             activeIcon: Icons.explore),
-        PaneItemEntry(
-            label: '分类'.tl,
-            icon: Icons.account_tree_outlined,
-            activeIcon: Icons.account_tree),
       ],
       paneActions: [
         PaneActionEntry(
