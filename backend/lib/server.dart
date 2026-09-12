@@ -2935,6 +2935,45 @@ Future<_DownloadedComicData> _downloadHitomi(
   }
 }
 
+/// 解析绅士漫画画廊页的图片列表。
+///
+/// 新版页面把图片链接放在脚本的 imglist 中，每条链接带 `?verify=` 时效签名；
+/// 必须完整保留查询参数，否则图片服务器返回 403。解析规则与 App 端保持一致
+/// （lib/network/htmanga_network/htmanga_main_network.dart），旧版页面作为兜底。
+List<String> _parseHtmangaGalleryImages(String html) {
+  final images = <String>[];
+  final host = RegExp(r'fast_img_host\s*=\s*\\?"([^"\\]*)\\?"')
+          .firstMatch(html)
+          ?.group(1) ??
+      '';
+  for (final match
+      in RegExp(r'url\s*:\s*[^",]*"((?:https?:)?//[^"\\]+)').allMatches(html)) {
+    var url = match.group(1)!;
+    if (url.startsWith('//')) {
+      url = '$host$url';
+      if (!url.startsWith('http')) {
+        url = 'https:$url';
+      }
+    }
+    images.add(url);
+  }
+  if (images.isNotEmpty) {
+    return images;
+  }
+  // 兜底：旧版页面直接在 HTML 中给出图片链接
+  for (final match
+      in RegExp(r'(?<=//)[\w./\[\]()-]+(?:\?[\w\-=&%]+)?').allMatches(html)) {
+    final u = match.group(0);
+    if (u == null || u.trim().isEmpty) continue;
+    final cleaned = u.trim().replaceFirst(RegExp(r'^/+'), '');
+    final lower = cleaned.toLowerCase();
+    if (!(lower.contains('/data/') || lower.contains('wnimg'))) continue;
+    if (lower.endsWith('.js') || lower.endsWith('.css')) continue;
+    images.add('https://$cleaned');
+  }
+  return images;
+}
+
 Future<_DownloadedComicData> _downloadHtmanga(
   Directory workDir,
   Map<String, dynamic>? auth,
@@ -3039,17 +3078,9 @@ Future<_DownloadedComicData> _downloadHtmanga(
       stopCheck: ctx.stopCheck,
       client: httpClient,
     );
-    final matches =
-        RegExp(r'(?<=//)[\w./\[\]()-]+').allMatches(galleryRes.bodyText());
-    final imageUrls = <String>[];
-    for (final m in matches) {
-      final u = m.group(0);
-      if (u == null || u.trim().isEmpty) continue;
-      final cleaned = u.trim().replaceFirst(RegExp(r'^/+'), '');
-      final lower = cleaned.toLowerCase();
-      if (!(lower.contains('/data/') || lower.contains('wnimg'))) continue;
-      if (lower.endsWith('.js') || lower.endsWith('.css')) continue;
-      imageUrls.add('https://$cleaned');
+    final imageUrls = _parseHtmangaGalleryImages(galleryRes.bodyText());
+    if (imageUrls.isEmpty) {
+      throw StateError('no images found in gallery page');
     }
 
     final comicDir = workDir..createSync(recursive: true);
