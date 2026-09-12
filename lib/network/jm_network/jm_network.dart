@@ -55,6 +55,86 @@ Uint8List _toUint8List(dynamic data) {
   throw Exception("Unexpected response bytes type: ${data.runtimeType}");
 }
 
+String _jmString(dynamic value, {String fallback = ""}) {
+  if (value == null) return fallback;
+  return value.toString();
+}
+
+int _jmInt(dynamic value, {int fallback = 0}) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return num.tryParse(value?.toString().trim() ?? "")?.toInt() ?? fallback;
+}
+
+bool _jmBool(dynamic value, {bool fallback = false}) {
+  if (value is bool) return value;
+  if (value is num) return value != 0;
+  final text = value?.toString().trim().toLowerCase();
+  if (text == "true" || text == "1") return true;
+  if (text == "false" || text == "0") return false;
+  return fallback;
+}
+
+Map<String, dynamic> _jmMap(dynamic value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) return Map<String, dynamic>.from(value);
+  return const <String, dynamic>{};
+}
+
+Iterable<dynamic> _jmIterable(dynamic value) {
+  if (value is Iterable) return value;
+  return const <dynamic>[];
+}
+
+List<String> _jmStringList(dynamic value, {String? fallback}) {
+  if (value is Iterable) return value.map(_jmString).toList();
+  if (value == null) return fallback == null ? <String>[] : <String>[fallback];
+  return <String>[_jmString(value)];
+}
+
+ComicCategoryInfo? _jmComicCategory(dynamic value) {
+  final category = _jmMap(value);
+  final id = category["id"];
+  final title = category["title"];
+  if (id == null || title == null) return null;
+  return ComicCategoryInfo(_jmString(id), _jmString(title));
+}
+
+List<ComicCategoryInfo> _jmComicCategories(dynamic value) {
+  final comic = _jmMap(value);
+  final categories = <ComicCategoryInfo>[];
+  final category = _jmComicCategory(comic["category"]);
+  final subCategory = _jmComicCategory(comic["category_sub"]);
+  if (category != null) categories.add(category);
+  if (subCategory != null) categories.add(subCategory);
+  return categories;
+}
+
+JmComicBrief _jmComicBrief(
+  dynamic value, {
+  String authorFallback = "",
+  String nameFallback = "",
+  String descriptionFallback = "",
+}) {
+  final comic = _jmMap(value);
+  final id = comic["id"];
+  if (id == null) {
+    throw const FormatException("JM comic id is missing");
+  }
+  return JmComicBrief(
+    _jmString(id),
+    _jmString(comic["author"], fallback: authorFallback),
+    _jmString(comic["name"], fallback: nameFallback),
+    _jmString(comic["description"], fallback: descriptionFallback),
+    _jmComicCategories(comic),
+  );
+}
+
+int _jmPagesFromTotal(dynamic total, int pageSize, {int emptyPageCount = 0}) {
+  if (pageSize <= 0) return emptyPageCount;
+  return (_jmInt(total) / pageSize).ceil();
+}
+
 extension _CachedNetwork on CachedNetwork {
   Future<CachedNetworkRes<String>> getJm(
       String url, BaseOptions options, int time,
@@ -420,30 +500,19 @@ class JmNetwork {
         var comics = <JmComicBrief>[];
         for (var comic in item["content"]) {
           try {
-            var categories = <ComicCategoryInfo>[];
-            if (comic["category"]["id"] != null &&
-                comic["category"]["title"] != null) {
-              categories.add(ComicCategoryInfo(
-                  comic["category"]["id"], comic["category"]["title"]));
-            }
-            if (comic["category_sub"]["id"] != null &&
-                comic["category_sub"]["title"] != null) {
-              categories.add(ComicCategoryInfo(
-                  comic["category_sub"]["id"], comic["category_sub"]["title"]));
-            }
-            comics.add(JmComicBrief(comic["id"], comic["author"], comic["name"],
-                comic["description"] ?? "", categories));
+            comics.add(_jmComicBrief(comic));
           } catch (e) {
             continue;
           }
         }
-        String type = item["type"];
-        String id = item["id"].toString();
+        String type = _jmString(item["type"]);
+        String id = _jmString(item["id"]);
         if (type == "category_id") {
-          id = item["slug"];
+          id = _jmString(item["slug"]);
         }
-        data.items
-            .add(HomePageItem(item["title"], id, comics, type != "promote"));
+        data.items.add(
+          HomePageItem(_jmString(item["title"]), id, comics, type != "promote"),
+        );
       }
       return Res(data);
     } catch (e, s) {
@@ -463,22 +532,10 @@ class JmNetwork {
     }
     try {
       var list = PromoteList(id, []);
-      list.total = int.parse(res.data["total"]);
+      list.total = _jmInt(res.data["total"]);
       for (var comic in (res.data["list"])) {
-        var categories = <ComicCategoryInfo>[];
-        if (comic["category"]["id"] != null &&
-            comic["category"]["title"] != null) {
-          categories.add(ComicCategoryInfo(
-              comic["category"]["id"], comic["category"]["title"]));
-        }
-        if (comic["category_sub"]["id"] != null &&
-            comic["category_sub"]["title"] != null) {
-          categories.add(ComicCategoryInfo(
-              comic["category_sub"]["id"], comic["category_sub"]["title"]));
-        }
         try {
-          list.comics.add(JmComicBrief(comic["id"], comic["author"],
-              comic["name"], comic["description"] ?? "", categories));
+          list.comics.add(_jmComicBrief(comic));
         } catch (e) {
           //忽略
         }
@@ -507,20 +564,8 @@ class JmNetwork {
     }
     try {
       for (var comic in (res.data["list"])) {
-        var categories = <ComicCategoryInfo>[];
-        if (comic["category"]["id"] != null &&
-            comic["category"]["title"] != null) {
-          categories.add(ComicCategoryInfo(
-              comic["category"]["id"], comic["category"]["title"]));
-        }
-        if (comic["category_sub"]["id"] != null &&
-            comic["category_sub"]["title"] != null) {
-          categories.add(ComicCategoryInfo(
-              comic["category_sub"]["id"], comic["category_sub"]["title"]));
-        }
         try {
-          list.comics.add(JmComicBrief(comic["id"], comic["author"],
-              comic["name"], comic["description"] ?? "", categories));
+          list.comics.add(_jmComicBrief(comic));
         } catch (e) {
           //忽视
         }
@@ -547,19 +592,7 @@ class JmNetwork {
       var comics = <JmComicBrief>[];
       for (var comic in (res.data)) {
         try {
-          var categories = <ComicCategoryInfo>[];
-          if (comic["category"]["id"] != null &&
-              comic["category"]["title"] != null) {
-            categories.add(ComicCategoryInfo(
-                comic["category"]["id"], comic["category"]["title"]));
-          }
-          if (comic["category_sub"]["id"] != null &&
-              comic["category_sub"]["title"] != null) {
-            categories.add(ComicCategoryInfo(
-                comic["category_sub"]["id"], comic["category_sub"]["title"]));
-          }
-          comics.add(JmComicBrief(comic["id"], comic["author"], comic["name"],
-              comic["description"] ?? "", categories));
+          comics.add(_jmComicBrief(comic));
         } catch (e) {
           continue;
         }
@@ -611,21 +644,10 @@ class JmNetwork {
     }
     try {
       var comics = <JmComicBrief>[];
-      for (var comic in (res.data["content"])) {
+      final content = _jmIterable(res.data["content"]);
+      for (var comic in content) {
         try {
-          var categories = <ComicCategoryInfo>[];
-          if (comic["category"]["id"] != null &&
-              comic["category"]["title"] != null) {
-            categories.add(ComicCategoryInfo(
-                comic["category"]["id"], comic["category"]["title"]));
-          }
-          if (comic["category_sub"]["id"] != null &&
-              comic["category_sub"]["title"] != null) {
-            categories.add(ComicCategoryInfo(
-                comic["category_sub"]["id"], comic["category_sub"]["title"]));
-          }
-          comics.add(JmComicBrief(comic["id"], comic["author"], comic["name"],
-              comic["description"] ?? "", categories));
+          comics.add(_jmComicBrief(comic));
         } catch (e) {
           continue;
         }
@@ -640,8 +662,7 @@ class JmNetwork {
       return Res(comics,
           subData: comics.isEmpty
               ? 0
-              : (int.parse(res.data["total"]) / res.data["content"].length)
-                  .ceil());
+              : _jmPagesFromTotal(res.data["total"], content.length));
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Data Analysis", "$e\n$s");
       Future.delayed(const Duration(microseconds: 500),
@@ -661,9 +682,17 @@ class JmNetwork {
       for (var c in res.data["categories"]) {
         var subCategories = <SubCategory>[];
         for (var sc in c["sub_categories"] ?? []) {
-          subCategories.add(SubCategory(sc["CID"], sc["name"], sc["slug"]));
+          subCategories.add(SubCategory(
+            _jmString(sc["CID"]),
+            _jmString(sc["name"]),
+            _jmString(sc["slug"]),
+          ));
         }
-        categories.add(Category(c["name"], c["slug"], subCategories));
+        categories.add(Category(
+          _jmString(c["name"]),
+          _jmString(c["slug"]),
+          subCategories,
+        ));
       }
       return Res(categories);
     } catch (e, s) {
@@ -682,35 +711,20 @@ class JmNetwork {
     }
     try {
       var comics = <JmComicBrief>[];
-      for (var comic in (res.data["content"])) {
+      final content = _jmIterable(res.data["content"]);
+      for (var comic in content) {
         try {
-          var categories = <ComicCategoryInfo>[];
-          if (comic["category"]["id"] != null &&
-              comic["category"]["title"] != null) {
-            categories.add(ComicCategoryInfo(
-                comic["category"]["id"], comic["category"]["title"]));
-          }
-          if (comic["category_sub"]["id"] != null &&
-              comic["category_sub"]["title"] != null) {
-            categories.add(ComicCategoryInfo(
-                comic["category_sub"]["id"], comic["category_sub"]["title"]));
-          }
-          comics.add(JmComicBrief(comic["id"], comic["author"], comic["name"],
-              comic["description"] ?? "", categories));
+          comics.add(_jmComicBrief(comic));
         } catch (e) {
           continue;
         }
       }
-      Object total = res.data["total"];
-      if (total is String) {
-        total = int.parse(total);
-      }
-      var current = res.data["content"].length;
-      var pagesCount = 1;
-      if (current != 0) {
-        pagesCount = ((total as int) / current).ceil();
-      }
-      return Res(comics, subData: pagesCount);
+      return Res(comics,
+          subData: _jmPagesFromTotal(
+            res.data["total"],
+            content.length,
+            emptyPageCount: 1,
+          ));
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Data Analysis", "$e\n$s");
       return Res(null, errorMessage: e.toString());
@@ -727,54 +741,47 @@ class JmNetwork {
       return Res(null, errorMessage: res.errorMessage);
     }
     try {
-      var author = <String>[];
-      for (var s in res.data["author"] ?? "未知") {
-        author.add(s);
-      }
+      var author = _jmStringList(res.data["author"], fallback: "未知");
       var series = <int, String>{};
       var epNames = <String>[];
       int sort = 1;
-      for (var s in res.data["series"] ?? []) {
-        series[sort] = s["id"];
+      for (var s in _jmIterable(res.data["series"])) {
+        final episode = _jmMap(s);
+        series[sort] = _jmString(episode["id"]);
         sort++;
-        var name = s["name"] as String;
+        var name = _jmString(episode["name"]);
         if (name.isEmpty) {
-          name = "第${s["sort"]}話";
+          name = "第${_jmString(episode["sort"])}話";
         }
         epNames.add(name);
       }
-      var tags = <String>[];
-      for (var s in res.data["tags"] ?? []) {
-        tags.add(s);
-      }
-      var works = <String>[];
-      for (var s in res.data["works"] ?? []) {
-        works.add(s);
-      }
-      var actors = <String>[];
-      for (var s in res.data["actors"] ?? []) {
-        actors.add(s);
-      }
+      var tags = _jmStringList(res.data["tags"]);
+      var works = _jmStringList(res.data["works"]);
+      var actors = _jmStringList(res.data["actors"]);
       var related = <JmComicBrief>[];
-      for (var c in res.data["related_list"] ?? []) {
-        related.add(JmComicBrief(c["id"], c["author"] ?? "Unknown",
-            c["name"] ?? "Unknown", c["description"] ?? "None", []));
+      for (var c in _jmIterable(res.data["related_list"])) {
+        related.add(_jmComicBrief(
+          c,
+          authorFallback: "Unknown",
+          nameFallback: "Unknown",
+          descriptionFallback: "None",
+        ));
       }
       return Res(JmComicInfo(
-          res.data["name"] ?? "未知",
+          _jmString(res.data["name"], fallback: "未知"),
           id,
           author,
-          res.data["description"] ?? "无",
-          int.parse(res.data["likes"] ?? "0"),
-          int.parse(res.data["total_views"] ?? "0"),
+          _jmString(res.data["description"], fallback: "无"),
+          _jmInt(res.data["likes"]),
+          _jmInt(res.data["total_views"]),
           series,
           tags,
           works,
           actors,
           related,
-          res.data["liked"] ?? false,
-          res.data["is_favorite"] ?? false,
-          int.parse(res.data["comment_total"] ?? "0"),
+          _jmBool(res.data["liked"]),
+          _jmBool(res.data["is_favorite"]),
+          _jmInt(res.data["comment_total"]),
           epNames));
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Data Analysis", "$e\n$s");
@@ -854,28 +861,11 @@ class JmNetwork {
     }
     try {
       var comics = <JmComicBrief>[];
-      for (var comic in (res.data["list"])) {
-        var categories = <ComicCategoryInfo>[];
-        if (comic["category"]["id"] != null &&
-            comic["category"]["title"] != null) {
-          categories.add(ComicCategoryInfo(
-              comic["category"]["id"], comic["category"]["title"]));
-        }
-        if (comic["category_sub"]["id"] != null &&
-            comic["category_sub"]["title"] != null) {
-          categories.add(ComicCategoryInfo(
-              comic["category_sub"]["id"], comic["category_sub"]["title"]));
-        }
-        comics.add(JmComicBrief(comic["id"], comic["author"], comic["name"],
-            comic["description"] ?? "", categories));
+      for (var comic in _jmIterable(res.data["list"])) {
+        comics.add(_jmComicBrief(comic));
       }
-      int pages;
-      if (comics.isNotEmpty) {
-        pages = (int.parse(res.data["total"]) / comics.length).ceil();
-      } else {
-        pages = 0;
-      }
-      return Res(comics, subData: pages);
+      return Res(comics,
+          subData: _jmPagesFromTotal(res.data["total"], comics.length));
     } catch (e, s) {
       if (kDebugMode) {
         print(e);
@@ -895,7 +885,7 @@ class JmNetwork {
     try {
       var folders = <String, String>{};
       for (var folder in res.data["folder_list"]) {
-        folders[folder["FID"]] = folder["name"];
+        folders[_jmString(folder["FID"])] = _jmString(folder["name"]);
       }
       return Res(folders);
     } catch (e, s) {
@@ -953,7 +943,7 @@ class JmNetwork {
     try {
       var images = <String>[];
       for (var s in res.data["images"]) {
-        images.add(getJmImageUrl(s, id));
+        images.add(getJmImageUrl(_jmString(s), id));
       }
       return Res(images);
     } catch (e, s) {
@@ -991,20 +981,32 @@ class JmNetwork {
       }
 
       var comments = <Comment>[];
-      for (var c in res.data["list"]) {
+      for (var c in _jmIterable(res.data["list"])) {
+        final comment = _jmMap(c);
         var reply = <Comment>[];
-        for (var r in c["replys"] ?? []) {
-          reply.add(Comment(r["CID"], getJmAvatarUrl(r["photo"]), r["username"],
-              r["addtime"], parseContent(r["content"]), []));
+        for (var r in _jmIterable(comment["replys"])) {
+          final replyComment = _jmMap(r);
+          reply.add(Comment(
+            _jmString(replyComment["CID"]),
+            getJmAvatarUrl(_jmString(replyComment["photo"])),
+            _jmString(replyComment["username"]),
+            _jmString(replyComment["addtime"]),
+            parseContent(_jmString(replyComment["content"])),
+            [],
+          ));
         }
-        comments.add(Comment(c["CID"], getJmAvatarUrl(c["photo"]),
-            c["username"], c["addtime"], parseContent(c["content"]), reply));
+        comments.add(Comment(
+          _jmString(comment["CID"]),
+          getJmAvatarUrl(_jmString(comment["photo"])),
+          _jmString(comment["username"]),
+          _jmString(comment["addtime"]),
+          parseContent(_jmString(comment["content"])),
+          reply,
+        ));
       }
       return Res(
         comments,
-        subData: res.data["total"] is int
-            ? res.data["total"]
-            : (int.tryParse(res.data["total"]) ?? 1),
+        subData: _jmInt(res.data["total"], fallback: 1),
       );
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Data Analysis", "$e\n$s");
@@ -1037,7 +1039,7 @@ class JmNetwork {
     try {
       Map<String, String> categories = {};
       for (var c in res.data["categories"]) {
-        categories[c["id"]] = c["time"];
+        categories[_jmString(c["id"])] = _jmString(c["time"]);
       }
       return Res(categories);
     } catch (e, s) {
@@ -1057,20 +1059,8 @@ class JmNetwork {
     }
     try {
       var comics = <JmComicBrief>[];
-      for (var comic in (res.data["list"])) {
-        var categories = <ComicCategoryInfo>[];
-        if (comic["category"]["id"] != null &&
-            comic["category"]["title"] != null) {
-          categories.add(ComicCategoryInfo(
-              comic["category"]["id"], comic["category"]["title"]));
-        }
-        if (comic["category_sub"]["id"] != null &&
-            comic["category_sub"]["title"] != null) {
-          categories.add(ComicCategoryInfo(
-              comic["category_sub"]["id"], comic["category_sub"]["title"]));
-        }
-        comics.add(JmComicBrief(comic["id"], comic["author"], comic["name"],
-            comic["description"] ?? "", categories));
+      for (var comic in _jmIterable(res.data["list"])) {
+        comics.add(_jmComicBrief(comic));
       }
       return Res(comics);
     } catch (e, s) {
