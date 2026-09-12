@@ -773,6 +773,101 @@ class _TaskRunner {
     return row != null;
   }
 
+  /// 读取漫画记录中的分集信息（规则与只读接口一致；旧数据缺少字段时视为全部已下载）。
+  _ComicEpInfo _comicEpInfo(String comicId) {
+    final row = db
+        .select('select meta_json from comics where id = ?', [comicId])
+        .firstOrNull;
+    if (row == null) return const _ComicEpInfo(false, [], null);
+    final meta = _tryDecodeJson(row['meta_json'] as String?);
+    if (meta is! Map) return const _ComicEpInfo(false, [], null);
+    final metaMap = Map<String, dynamic>.from(meta);
+    final type = int.tryParse((metaMap['type'] ?? '').toString()) ?? -1;
+    final jsonObj = metaMap['json'];
+    final data = jsonObj is Map
+        ? Map<String, Object?>.from(jsonObj)
+        : const <String, Object?>{};
+
+    final hasEps =
+        type == 0 || type == 2 || (type == 6 && data['chapters'] is Map);
+    if (!hasEps) return const _ComicEpInfo(false, [], null);
+
+    final total = _epCountFromDownloadedJson(data);
+    final downloaded =
+        _normalizeEps(data['downloadedChapters'] ?? data['downloadedEps']) ??
+            (total != null ? List<int>.generate(total, (i) => i) : <int>[]);
+    return _ComicEpInfo(true, downloaded, total);
+  }
+
+  /// 将 [incomingPages] 下的内容并入 [targetPages]（同名替换；封面文件留给封面逻辑处理）。
+  void _mergePagesDirs(Directory targetPages, Directory incomingPages) {
+    if (!incomingPages.existsSync()) return;
+    for (final entry in incomingPages.listSync()) {
+      final name = p.basename(entry.path);
+      if (name == 'cover.jpg') continue;
+      final dest = entry is Directory
+          ? Directory(p.join(targetPages.path, name))
+          : File(p.join(targetPages.path, name));
+      if (dest.existsSync()) {
+        try {
+          dest.deleteSync(recursive: true);
+        } catch (_) {
+          // ignore
+        }
+      }
+      entry.renameSync(dest.path);
+    }
+  }
+
+  /// 将本次下载内容按集并入已有漫画目录（保留其他集；封面已有则保留）。
+  void _mergeIntoComicDir({
+    required Directory comicDir,
+    required Directory incomingDir,
+  }) {
+    comicDir.createSync(recursive: true);
+    final targetPages = Directory(p.join(comicDir.path, 'pages'))
+      ..createSync(recursive: true);
+    final incomingPages = Directory(p.join(incomingDir.path, 'pages'));
+    _mergePagesDirs(targetPages, incomingPages);
+
+    final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
+    if (!coverFile.existsSync()) {
+      final incomingCover = File(p.join(incomingDir.path, 'cover.jpg'));
+      if (incomingCover.existsSync()) {
+        incomingCover.renameSync(coverFile.path);
+      } else {
+        final extractedCover = File(p.join(incomingPages.path, 'cover.jpg'));
+        if (extractedCover.existsSync()) {
+          extractedCover.renameSync(coverFile.path);
+        }
+      }
+    }
+  }
+
+  /// 合并已下载集记录（并集）；[existed] 为 false 时原样返回。
+  Map<String, dynamic> _mergeDownloadedJson(
+    String comicId,
+    Map<String, dynamic> incoming, {
+    required bool existed,
+  }) {
+    final merged = Map<String, dynamic>.from(incoming);
+    if (!existed) return merged;
+    final info = _comicEpInfo(comicId);
+    if (!info.hasEps) return merged;
+
+    final incomingEps =
+        _normalizeEps(merged['downloadedChapters'] ?? merged['downloadedEps']) ??
+            const <int>[];
+    final union = <int>{...info.downloaded, ...incomingEps}.toList()..sort();
+    if (merged.containsKey('downloadedEps') &&
+        !merged.containsKey('downloadedChapters')) {
+      merged['downloadedEps'] = union;
+    } else {
+      merged['downloadedChapters'] = union;
+    }
+    return merged;
+  }
+
   String createDownloadTask(Map<String, dynamic> params) {
     final source = (params['source'] ?? '').toString().trim();
     final target = (params['target'] ?? '').toString().trim();
@@ -786,12 +881,27 @@ class _TaskRunner {
             .toString()
             .trim();
 
-    final canonicalId = _canonicalComicId(source: source, target: target);
-    if (canonicalId.isNotEmpty && _comicExists(canonicalId)) {
-      throw StateError('already downloaded');
-    }
     if (_activeTaskExists(source, target)) {
       throw StateError('task already exists');
+    }
+
+    final canonicalId = _canonicalComicId(source: source, target: target);
+    if (canonicalId.isNotEmpty && _comicExists(canonicalId)) {
+      final requested = _normalizeEps(params['eps']);
+      if (!_supportsPartialEps(source) ||
+          requested == null ||
+          requested.isEmpty) {
+        throw StateError('already downloaded');
+      }
+      final info = _comicEpInfo(canonicalId);
+      final missing = requested
+          .where((e) => !info.downloaded.contains(e))
+          .toList()
+        ..sort();
+      if (missing.isEmpty) {
+        throw StateError('already downloaded');
+      }
+      params['eps'] = missing;
     }
 
     final id = _randomId(18);
@@ -1017,17 +1127,31 @@ class _TaskRunner {
     if (type == 'download') {
       final canonicalId = _canonicalComicId(source: source, target: target);
       if (canonicalId.isNotEmpty && _comicExists(canonicalId)) {
-        final now0 = DateTime.now().millisecondsSinceEpoch;
-        db.execute(
-          '''
-          update tasks
-          set status = 'succeeded', message = 'already downloaded', comic_id = ?, updated_at = ?
-          where id = ?
-          ''',
-          [canonicalId, now0, taskId],
-        );
-        _tryDeleteTaskTemp(taskId);
-        return;
+        final requested = _normalizeEps(params['eps']);
+        var missing = <int>[];
+        if (_supportsPartialEps(source) &&
+            requested != null &&
+            requested.isNotEmpty) {
+          final info = _comicEpInfo(canonicalId);
+          missing = requested
+              .where((e) => !info.downloaded.contains(e))
+              .toList()
+            ..sort();
+        }
+        if (missing.isEmpty) {
+          final now0 = DateTime.now().millisecondsSinceEpoch;
+          db.execute(
+            '''
+            update tasks
+            set status = 'succeeded', message = 'already downloaded', comic_id = ?, updated_at = ?
+            where id = ?
+            ''',
+            [canonicalId, now0, taskId],
+          );
+          _tryDeleteTaskTemp(taskId);
+          return;
+        }
+        params['eps'] = missing; // 竞态收敛：只下缺失集
       }
     } else if (type != 'upload') {
       final now0 = DateTime.now().millisecondsSinceEpoch;
@@ -1069,34 +1193,24 @@ class _TaskRunner {
         final comicId = downloaded.id;
         final comicDir =
             Directory(p.join(storage.path, 'comics', _safeId(comicId)));
+        final tempDir = taskTempDir(taskId);
+        final existed = _comicExists(comicId);
 
-        if (_comicExists(comicId)) {
-          final now1 = DateTime.now().millisecondsSinceEpoch;
-          db.execute(
-            '''
-            update tasks
-            set status = 'succeeded', message = 'already downloaded', comic_id = ?, updated_at = ?
-            where id = ?
-            ''',
-            [comicId, now1, taskId],
-          );
-          _tryDeleteTaskTemp(taskId);
-          return;
-        }
-
-        if (comicDir.existsSync()) {
-          try {
-            comicDir.deleteSync(recursive: true);
-          } catch (_) {
-            // ignore
-          }
-        }
-
-        final committedDir = taskTempDir(taskId);
-        if (committedDir.existsSync()) {
-          committedDir.renameSync(comicDir.path);
+        if (existed) {
+          _mergeIntoComicDir(comicDir: comicDir, incomingDir: tempDir);
         } else {
-          comicDir.createSync(recursive: true);
+          if (comicDir.existsSync()) {
+            try {
+              comicDir.deleteSync(recursive: true);
+            } catch (_) {
+              // ignore
+            }
+          }
+          if (tempDir.existsSync()) {
+            tempDir.renameSync(comicDir.path);
+          } else {
+            comicDir.createSync(recursive: true);
+          }
         }
 
         final pagesDir = Directory(p.join(comicDir.path, 'pages'));
@@ -1112,6 +1226,12 @@ class _TaskRunner {
 
         final sizeBytes = _directorySizeBytes(pagesDir);
 
+        final mergedJson = _mergeDownloadedJson(
+          comicId,
+          downloaded.downloadedJson,
+          existed: existed,
+        );
+
         final meta = <String, dynamic>{
           'id': downloaded.id,
           'title': downloaded.title,
@@ -1119,7 +1239,7 @@ class _TaskRunner {
           'type': downloaded.type,
           'tags': downloaded.tags,
           'directory': downloaded.directory,
-          'json': downloaded.downloadedJson,
+          'json': mergedJson,
         };
 
         db.execute(
@@ -1152,6 +1272,7 @@ class _TaskRunner {
           ''',
           [downloaded.id, DateTime.now().millisecondsSinceEpoch, taskId],
         );
+        _tryDeleteTaskTemp(taskId);
       } else {
         final workDir = taskTempDir(taskId)..createSync(recursive: true);
         final zipFile = File(p.join(workDir.path, 'comic.zip'));
@@ -1197,27 +1318,58 @@ class _TaskRunner {
         final comicId = downloaded.id;
         final comicDir =
             Directory(p.join(storage.path, 'comics', _safeId(comicId)));
+        final existed = _comicExists(comicId);
+        final existingInfo = existed ? _comicEpInfo(comicId) : null;
 
-        if (comicDir.existsSync()) {
-          try {
-            comicDir.deleteSync(recursive: true);
-          } catch (_) {
-            // ignore
-          }
-        }
-        comicDir.createSync(recursive: true);
+        Directory finalPagesDir;
+        if (existingInfo != null && existingInfo.hasEps) {
+          // 分集记录：按集并入（上传的集替换同集，其余保留）
+          final targetPages = Directory(p.join(comicDir.path, 'pages'))
+            ..createSync(recursive: true);
+          _mergePagesDirs(targetPages, pagesDir);
 
-        final movedPagesDir = Directory(p.join(comicDir.path, 'pages'));
-        pagesDir.renameSync(movedPagesDir.path);
-
-        final coverSrc = File(p.join(workDir.path, 'cover.jpg'));
-        if (coverSrc.existsSync()) {
+          final coverSrc = File(p.join(workDir.path, 'cover.jpg'));
           final coverOut = File(p.join(comicDir.path, 'cover.jpg'));
-          try {
+          if (coverSrc.existsSync()) {
+            if (coverOut.existsSync()) {
+              try {
+                coverOut.deleteSync();
+              } catch (_) {
+                // ignore
+              }
+            }
             coverSrc.renameSync(coverOut.path);
-          } catch (_) {
-            // ignore
+          } else if (!coverOut.existsSync()) {
+            final extractedCover = File(p.join(pagesDir.path, 'cover.jpg'));
+            if (extractedCover.existsSync()) {
+              extractedCover.renameSync(coverOut.path);
+            }
           }
+          finalPagesDir = targetPages;
+        } else {
+          // 整本语义：替换
+          if (comicDir.existsSync()) {
+            try {
+              comicDir.deleteSync(recursive: true);
+            } catch (_) {
+              // ignore
+            }
+          }
+          comicDir.createSync(recursive: true);
+
+          final movedPagesDir = Directory(p.join(comicDir.path, 'pages'));
+          pagesDir.renameSync(movedPagesDir.path);
+
+          final coverSrc = File(p.join(workDir.path, 'cover.jpg'));
+          if (coverSrc.existsSync()) {
+            final coverOut = File(p.join(comicDir.path, 'cover.jpg'));
+            try {
+              coverSrc.renameSync(coverOut.path);
+            } catch (_) {
+              // ignore
+            }
+          }
+          finalPagesDir = movedPagesDir;
         }
 
         final coverFile = File(p.join(comicDir.path, 'cover.jpg'));
@@ -1225,11 +1377,17 @@ class _TaskRunner {
         if (coverFile.existsSync()) {
           coverPath = coverFile.path;
         } else {
-          final extractedCover = File(p.join(movedPagesDir.path, 'cover.jpg'));
+          final extractedCover = File(p.join(finalPagesDir.path, 'cover.jpg'));
           if (extractedCover.existsSync()) coverPath = extractedCover.path;
         }
 
-        final sizeBytes = _directorySizeBytes(movedPagesDir);
+        final sizeBytes = _directorySizeBytes(finalPagesDir);
+
+        final mergedJson = _mergeDownloadedJson(
+          comicId,
+          downloaded.downloadedJson,
+          existed: existed,
+        );
 
         final meta = <String, dynamic>{
           'id': downloaded.id,
@@ -1238,7 +1396,7 @@ class _TaskRunner {
           'type': downloaded.type,
           'tags': downloaded.tags,
           'directory': downloaded.directory,
-          'json': downloaded.downloadedJson,
+          'json': mergedJson,
         };
 
         db.execute(
@@ -1442,6 +1600,71 @@ String _canonicalComicId({required String source, required String target}) {
     default:
       return '';
   }
+}
+
+/// 该源是否支持按集下载（其余源为整本画廊语义）。
+bool _supportsPartialEps(String source) => source == 'picacg' || source == 'jm';
+
+/// 解析请求中的集下标列表；字段不是列表时返回 null。
+List<int>? _normalizeEps(Object? raw) {
+  if (raw is! List) return null;
+  final eps = <int>[];
+  for (final e in raw) {
+    final v = int.tryParse(e.toString());
+    if (v == null) continue;
+    if (v < 0) continue;
+    eps.add(v);
+  }
+  return eps;
+}
+
+/// 从下载记录 JSON 中提取完整集名列表（与只读接口同规则）。
+List<String>? _epTitlesFromDownloadedJson(Map<String, Object?> data) {
+  final chapters = data['chapters'];
+  if (chapters is List) {
+    return chapters.map((e) => e.toString()).toList();
+  }
+  if (chapters is Map) {
+    return chapters.values.map((e) => e.toString()).toList();
+  }
+  final comic = data['comic'];
+  if (comic is Map) {
+    final epNames = comic['epNames'];
+    if (epNames is List) {
+      return epNames.map((e) => e.toString()).toList();
+    }
+  }
+  return null;
+}
+
+/// 从下载记录 JSON 中推断集总数（旧数据缺少已下载集字段时的兜底）。
+int? _epCountFromDownloadedJson(Map<String, Object?> data) {
+  final comic = data['comic'];
+  if (comic is Map) {
+    final series = comic['series'];
+    if (series is Map && series.isNotEmpty) return series.length;
+    if (series is List && series.isNotEmpty) return series.length;
+    final epNames = comic['epNames'];
+    if (epNames is List && epNames.isNotEmpty) return epNames.length;
+  }
+  final chapters = data['chapters'];
+  if (chapters is List) return chapters.length;
+  if (chapters is Map) return chapters.length;
+  return null;
+}
+
+/// 服务器漫画记录的分集信息。
+class _ComicEpInfo {
+  /// 记录是否有分集语义。
+  final bool hasEps;
+
+  /// 已下载集下标（0 基）。
+  final List<int> downloaded;
+
+  /// 已知集总数（可能为 null）。
+  final int? total;
+
+  const _ComicEpInfo(this.hasEps, this.downloaded, this.total);
 }
 
 String _guessExtFromUrl(Uri uri, {String fallback = 'jpg'}) {
@@ -3715,21 +3938,7 @@ Handler buildHandler({
       final downloaded = data['downloadedChapters'] ?? data['downloadedEps'];
       final downloadedList = downloaded is List ? downloaded : const [];
 
-      List<String>? titles;
-      final chapters = data['chapters'];
-      if (chapters is List) {
-        titles = chapters.map((e) => e.toString()).toList();
-      } else if (chapters is Map) {
-        titles = chapters.values.map((e) => e.toString()).toList();
-      } else {
-        final comic = data['comic'];
-        if (comic is Map) {
-          final epNames = comic['epNames'];
-          if (epNames is List) {
-            titles = epNames.map((e) => e.toString()).toList();
-          }
-        }
-      }
+      final titles = _epTitlesFromDownloadedJson(data);
 
       final result = <Map<String, Object?>>[];
       for (final e in downloadedList) {
@@ -4040,14 +4249,7 @@ Handler buildHandler({
 
     final epsRaw = json['eps'];
     if (epsRaw is List) {
-      final eps = <int>[];
-      for (final e in epsRaw) {
-        final v = int.tryParse(e.toString());
-        if (v == null) continue;
-        if (v < 0) continue;
-        eps.add(v);
-      }
-      json['eps'] = eps;
+      json['eps'] = _normalizeEps(epsRaw) ?? const <int>[];
     }
 
     try {
@@ -4955,6 +5157,7 @@ Handler buildHandler({
     return _json(200, {
       'ok': true,
       'exists': exists,
+      'active': taskRunner._activeTaskExists(sourceKey, target),
       if (exists) 'comicId': canonicalId,
     });
   });
