@@ -28,6 +28,8 @@ part 'category.dart';
 
 part 'favorites.dart';
 
+part 'migrations.dart';
+
 part 'page_tabs.dart';
 
 part 'parser.dart';

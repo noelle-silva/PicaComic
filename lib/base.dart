@@ -52,7 +52,7 @@ class Appdata {
     "0", //20 Eh画廊站点, 1表示e-hentai, 2表示exhentai
     "111111", //21 启用的漫画源
     "", //22 下载目录, 仅Windows端, 为空表示使用App数据目录
-    "0", //23 初始页面,
+    "me", //23 初始页面(HomePageId 语义 id),
     "1111111111", //24 [废弃]分类页面
     "0", //25 漫画列表显示模式
     "00", //26 已下载页面排序模式: 时间, 漫画名, 作者名, 大小
@@ -370,6 +370,13 @@ class _Settings {
 
   String get jmImgUrlIndex =>
       int.parse(appdata.settings[37]) < 4 ? appdata.settings[37] : "0";
+
+  /// 初始页面（HomePageId 的语义 id）。
+  String get initialPage => appdata.settings[23];
+
+  set initialPage(String value) {
+    appdata.settings[23] = value;
+  }
 
   /// 页面栏统一列表（探索栏+分类栏），序列化格式为 "<type>:<id>"，见 PageTab。事实源唯一：settings[77]。
   List<String> get pageTabs => appdata.settings[77].split(',');

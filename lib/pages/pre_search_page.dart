@@ -52,13 +52,14 @@ class _FloatingSearchBarState extends State<_FloatingSearchBar> {
         borderRadius: BorderRadius.circular(32),
       ),
       child: Row(children: [
-        Tooltip(
-          message: "返回".tl,
-          child: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () => context.pop(),
+        if (Navigator.of(context).canPop())
+          Tooltip(
+            message: "返回".tl,
+            child: IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () => context.pop(),
+            ),
           ),
-        ),
         Expanded(
           child: Center(
             child: TextField(
@@ -111,6 +112,11 @@ class _FloatingSearchBarState extends State<_FloatingSearchBar> {
 }
 
 class PreSearchController extends StateController {
+  /// 搜索会话全局唯一，跨页面重建保持输入与选项。
+  static const tag = "pre_search";
+
+  final TextEditingController textController = TextEditingController();
+
   String target = '';
 
   SearchPageData get searchPageData =>
@@ -156,18 +162,41 @@ class PreSearchController extends StateController {
   }
 }
 
-class PreSearchPage extends StatelessWidget {
-  PreSearchPage({String initialValue = "", super.key})
-      : controller = TextEditingController(text: initialValue);
+class PreSearchPage extends StatefulWidget {
+  const PreSearchPage({this.initialValue = "", super.key});
 
-  final TextEditingController controller;
+  final String initialValue;
 
-  final searchController = StateController.put(PreSearchController());
+  @override
+  State<PreSearchPage> createState() => _PreSearchPageState();
+}
+
+class _PreSearchPageState extends State<PreSearchPage> {
+  late final PreSearchController searchController;
+
+  final FocusNode _focusNode = FocusNode();
 
   final comicSources =
       ComicSource.sources.where((element) => element.searchPageData != null);
 
-  final FocusNode _focusNode = FocusNode();
+  TextEditingController get controller => searchController.textController;
+
+  @override
+  void initState() {
+    searchController = StateController.findOrNull<PreSearchController>(
+            tag: PreSearchController.tag) ??
+        StateController.put(PreSearchController(), tag: PreSearchController.tag);
+    if (widget.initialValue.isNotEmpty) {
+      controller.text = widget.initialValue;
+    }
+    super.initState();
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
 
   void search([String? s, String? type]) {
     var keyword = (s ?? controller.text).trim();
@@ -289,6 +318,7 @@ class PreSearchPage extends StatelessWidget {
 
   Widget buildBody(BuildContext context) {
     var widget = StateBuilder<PreSearchController>(
+      tag: PreSearchController.tag,
       id: 100,
       builder: (logic) {
         if (controller.text.removeAllBlank.isEmpty ||
@@ -372,6 +402,7 @@ class PreSearchPage extends StatelessWidget {
     }
 
     return StateBuilder<PreSearchController>(
+      tag: PreSearchController.tag,
       builder: (logic) {
         void onSelected(String text, TranslationType? type) {
           var words = controller.text.split(" ");
@@ -546,6 +577,7 @@ class PreSearchPage extends StatelessWidget {
         );
 
     return StateBuilder<PreSearchController>(
+      tag: PreSearchController.tag,
       builder: (logic) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -591,6 +623,7 @@ class PreSearchPage extends StatelessWidget {
     }
 
     return StateBuilder<PreSearchController>(
+      tag: PreSearchController.tag,
       id: "mode",
       builder: (logic) {
         var children = <Widget>[];
@@ -784,6 +817,7 @@ class PreSearchPage extends StatelessWidget {
 
   Widget buildHistorySideBar() {
     return StateBuilder<PreSearchController>(
+      tag: PreSearchController.tag,
       id: "history",
       builder: (logic) {
         return ListView.builder(
@@ -809,6 +843,7 @@ class PreSearchPage extends StatelessWidget {
 
   Widget buildFavoriteSideBar() {
     return StateBuilder<PreSearchController>(
+      tag: PreSearchController.tag,
       builder: (logic) => ListView.builder(
         padding: EdgeInsets.zero,
         itemCount: appdata.favoriteTags.length + 1,
@@ -837,6 +872,7 @@ class PreSearchPage extends StatelessWidget {
       trailing: buildClearHistoryButton(logic),
     ).toSliver();
     yield StateBuilder<PreSearchController>(
+      tag: PreSearchController.tag,
       id: "history",
       builder: (logic) {
         var length = appdata.searchHistory.length;
@@ -873,6 +909,7 @@ class PreSearchPage extends StatelessWidget {
     ).toSliver();
 
     yield StateBuilder<PreSearchController>(
+      tag: PreSearchController.tag,
       builder: (logic) => SliverList.builder(
         itemCount: appdata.favoriteTags.length,
         itemBuilder: (context, index) {

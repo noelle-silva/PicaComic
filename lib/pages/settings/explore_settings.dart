@@ -12,7 +12,8 @@ Widget buildExploreSettings(BuildContext context, bool popUp) {
       SelectSettingWithAppdata(
         icon: const Icon(Icons.home_outlined),
         title: "初始页面".tl,
-        options: ["我".tl, "收藏".tl, "探索".tl],
+        options: [for (var id in HomePageId.values) id.label.tl],
+        persistValues: [for (var id in HomePageId.values) id.name],
         settingsIndex: 23,
       ),
       NewPageSetting(

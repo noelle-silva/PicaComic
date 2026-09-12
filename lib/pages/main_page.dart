@@ -79,13 +79,33 @@ class MainPageState extends State<MainPage> {
     _navigatorKey!.currentContext!.pop();
   }
 
-  List<Widget> get _pages => [
-        const MePage(),
-        FavoritesPage(),
-        ExplorePage(
-          key: Key(appdata.settings[77]),
-        ),
-      ];
+  List<Widget> get _pages =>
+      [for (var id in HomePageId.values) _buildPage(id)];
+
+  Widget _buildPage(HomePageId id) => switch (id) {
+        HomePageId.me => const MePage(),
+        HomePageId.search => const PreSearchPage(),
+        HomePageId.favorites => FavoritesPage(),
+        HomePageId.explore => ExplorePage(key: Key(appdata.settings[77])),
+      };
+
+  PaneItemEntry _paneEntry(HomePageId id) {
+    var (icon, activeIcon) = switch (id) {
+      HomePageId.me => (Icons.person_outline, Icons.person),
+      HomePageId.search => (Icons.search_outlined, Icons.search),
+      HomePageId.favorites =>
+        (Icons.local_activity_outlined, Icons.local_activity),
+      HomePageId.explore => (Icons.explore_outlined, Icons.explore),
+    };
+    return PaneItemEntry(
+        label: id.label.tl, icon: icon, activeIcon: activeIcon);
+  }
+
+  int get _initialPageIndex {
+    var index = HomePageId.values
+        .indexWhere((e) => e.name == appdata.appSettings.initialPage);
+    return index < 0 ? 0 : index;
+  }
 
   void _login() {
     network.updateProfile().then((res) {
@@ -208,28 +228,10 @@ class MainPageState extends State<MainPage> {
   @override
   Widget build(BuildContext context) {
     return NaviPane(
-      initialPage:
-          int.parse(appdata.settings[23]).clamp(0, _pages.length - 1),
+      initialPage: _initialPageIndex,
       observer: _observer,
-      paneItems: [
-        PaneItemEntry(
-            label: '我'.tl,
-            icon: Icons.person_outline,
-            activeIcon: Icons.person),
-        PaneItemEntry(
-            label: '收藏'.tl,
-            icon: Icons.local_activity_outlined,
-            activeIcon: Icons.local_activity),
-        PaneItemEntry(
-            label: '探索'.tl,
-            icon: Icons.explore_outlined,
-            activeIcon: Icons.explore),
-      ],
+      paneItems: [for (var id in HomePageId.values) _paneEntry(id)],
       paneActions: [
-        PaneActionEntry(
-            icon: Icons.search,
-            label: "搜索".tl,
-            onTap: () => to(() => PreSearchPage(), preventDuplicate: true)),
         PaneActionEntry(
             icon: Icons.settings,
             label: "设置".tl,

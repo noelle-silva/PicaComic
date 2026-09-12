@@ -93,35 +93,3 @@ class PageTab {
       .where((e) => e.isValid)
       .toList();
 }
-
-/// 将旧版分离存储的探索/分类页面配置合并为统一的页面栏配置。
-///
-/// 旧数据中探索栏（裸标题）与分类栏（裸 key）分别存储，合并时仍保持
-/// "探索栏全部在前、分类栏全部在后"的顺序。幂等：可在每个数据入口重复调用。
-Future<void> migratePageTabSettings() async {
-  var tabs = appdata.appSettings.pageTabs.where((e) => e.isNotEmpty).toList();
-  var legacyCategories = appdata.appSettings.legacyCategoryPages
-      .where((e) => e.isNotEmpty)
-      .toList();
-  var needMigrate = legacyCategories.isNotEmpty ||
-      tabs.any((e) => PageTab.tryParse(e) == null);
-  if (!needMigrate) {
-    return;
-  }
-
-  var merged = <String>{};
-  for (var raw in tabs) {
-    merged.add(
-        PageTab.tryParse(raw) != null ? raw : PageTab.explore(raw).serialized);
-  }
-  for (var raw in legacyCategories) {
-    merged.add(PageTab.category(raw).serialized);
-  }
-
-  appdata.appSettings.pageTabs = merged.toList();
-  appdata.appSettings.legacyCategoryPages = [];
-  if (appdata.settings[23] == "3") {
-    appdata.settings[23] = "2";
-  }
-  await appdata.updateSettings(false);
-}

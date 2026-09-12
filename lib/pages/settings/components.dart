@@ -84,6 +84,7 @@ class SelectSettingWithAppdata extends StatelessWidget {
     required this.title,
     required this.settingsIndex,
     required this.options,
+    this.persistValues,
     this.onChanged,
   });
 
@@ -95,20 +96,38 @@ class SelectSettingWithAppdata extends StatelessWidget {
 
   final List<String> options;
 
+  /// 与 [options] 一一对应的持久化值；为 null 时持久化选项位置索引。
+  final List<String>? persistValues;
+
   final void Function()? onChanged;
 
   @override
   Widget build(BuildContext context) {
+    var persistValues = this.persistValues;
+    if (persistValues == null) {
+      return SelectSetting(
+        leading: icon,
+        title: title,
+        values: options,
+        onChanged: (i) {
+          appdata.settings[settingsIndex] = i.toString();
+          appdata.updateSettings();
+          onChanged?.call();
+        },
+        initialValue: int.parse(appdata.settings[settingsIndex]),
+      );
+    }
+    var current = persistValues.indexOf(appdata.settings[settingsIndex]);
     return SelectSetting(
       leading: icon,
       title: title,
       values: options,
       onChanged: (i) {
-        appdata.settings[settingsIndex] = i.toString();
+        appdata.settings[settingsIndex] = persistValues[i];
         appdata.updateSettings();
         onChanged?.call();
       },
-      initialValue: int.parse(appdata.settings[settingsIndex]),
+      initialValue: current < 0 ? 0 : current,
     );
   }
 }
