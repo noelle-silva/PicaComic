@@ -203,6 +203,20 @@ class PicaServer {
     return Map<String, dynamic>.from(data);
   }
 
+  /// 读取服务器保存的登录态内容；不存在时返回 null。
+  Future<Map<String, dynamic>?> getAuthSessionData(String source) async {
+    final dio = _dio();
+    final res = await dio.get(
+      '/api/v1/auth/${Uri.encodeComponent(source)}/data',
+    );
+    final data = res.data;
+    if (data is! Map) return null;
+    if (data['exists'] != true) return null;
+    final session = data['data'];
+    if (session is! Map) return null;
+    return Map<String, dynamic>.from(session);
+  }
+
   Future<String> createDownloadTask({
     required String source,
     required String target,

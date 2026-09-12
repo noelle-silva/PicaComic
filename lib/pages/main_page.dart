@@ -11,7 +11,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'explore_page.dart';
 import 'favorites/main_favorites_page.dart';
 import 'pre_search_page.dart';
-import 'settings/settings_page.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/network/update.dart';
@@ -91,7 +90,7 @@ class MainPageState extends State<MainPage> {
 
   PaneItemEntry _paneEntry(HomePageId id) {
     var (icon, activeIcon) = switch (id) {
-      HomePageId.me => (Icons.person_outline, Icons.person),
+      HomePageId.me => (Icons.home_outlined, Icons.home),
       HomePageId.search => (Icons.search_outlined, Icons.search),
       HomePageId.favorites =>
         (Icons.local_activity_outlined, Icons.local_activity),
@@ -231,12 +230,7 @@ class MainPageState extends State<MainPage> {
       initialPage: _initialPageIndex,
       observer: _observer,
       paneItems: [for (var id in HomePageId.values) _paneEntry(id)],
-      paneActions: [
-        PaneActionEntry(
-            icon: Icons.settings,
-            label: "设置".tl,
-            onTap: () => SettingsPage.open()),
-      ],
+      paneActions: const [],
       pageBuilder: (index) {
         return Navigator(
           observers: [_observer],

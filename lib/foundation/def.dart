@@ -20,7 +20,7 @@ enum ComicType {
 ///
 /// [name] 为稳定语义 id（用于持久化，勿随意更改），[label] 为显示名（展示时翻译）。
 enum HomePageId {
-  me('我'),
+  me('主页'),
   search('搜索'),
   favorites('收藏'),
   explore('探索');

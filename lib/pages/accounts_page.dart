@@ -4,6 +4,8 @@ import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/foundation/ui_mode.dart';
+import 'package:pica_comic/network/pica_server.dart';
+import 'package:pica_comic/network/pica_server_auth_sync.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
@@ -51,7 +53,6 @@ class AccountsPage extends StatelessWidget {
   Iterable<Widget> buildContent(BuildContext context) sync* {
     var sources =
         ComicSource.sources.where((element) => element.account != null);
-    if (sources.isEmpty) return;
 
     for (var element in sources) {
       final bool logged = element.isLogin;
@@ -138,6 +139,95 @@ class AccountsPage extends StatelessWidget {
         );
       }
       yield const Divider();
+    }
+
+    yield Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: Text(
+        "登录态同步".tl,
+        style: const TextStyle(fontSize: 20),
+      ),
+    );
+    yield ListTile(
+      leading: const Icon(Icons.cloud_upload_outlined),
+      title: Text("同步登录态到服务器".tl),
+      subtitle: Text("把本地登录态（明文）上传到服务器".tl),
+      onTap: () => _syncAuthToServer(context),
+    );
+    yield ListTile(
+      leading: const Icon(Icons.cloud_download_outlined),
+      title: Text("下载登录态到本地".tl),
+      subtitle: Text("用服务器上的登录态覆盖本地".tl),
+      onTap: () => _downloadAuthFromServer(context),
+    );
+  }
+
+  void _syncAuthToServer(BuildContext context) {
+    if (!PicaServer.instance.enabled) {
+      showToast(message: "未配置服务器".tl);
+      return;
+    }
+    showConfirmDialog(
+      context,
+      "同步登录态到服务器".tl,
+      "将把本地登录态（明文）上传到服务器，是否继续？".tl,
+      () async {
+        final dialog = showLoadingDialog(
+          context,
+          barrierDismissible: false,
+          allowCancel: false,
+          message: "同步中".tl,
+        );
+        try {
+          final result = await PicaServerAuthSync.syncAll();
+          dialog.close();
+          _showAuthSyncResult(result, "同步完成".tl, "同步失败".tl);
+        } catch (e) {
+          dialog.close();
+          showToast(message: e.toString());
+        }
+      },
+    );
+  }
+
+  void _downloadAuthFromServer(BuildContext context) {
+    if (!PicaServer.instance.enabled) {
+      showToast(message: "未配置服务器".tl);
+      return;
+    }
+    showConfirmDialog(
+      context,
+      "下载登录态到本地".tl,
+      "将用服务器上的登录态覆盖本地登录态，是否继续？".tl,
+      () async {
+        final dialog = showLoadingDialog(
+          context,
+          barrierDismissible: false,
+          allowCancel: false,
+          message: "下载中".tl,
+        );
+        try {
+          final result = await PicaServerAuthSync.downloadAll();
+          dialog.close();
+          _showAuthSyncResult(result, "下载完成".tl, "下载失败".tl);
+        } catch (e) {
+          dialog.close();
+          showToast(message: e.toString());
+        }
+      },
+    );
+  }
+
+  void _showAuthSyncResult(
+      PicaServerAuthSyncResult result, String okText, String failText) {
+    final failed = result.statusBySource.entries
+        .where((e) => e.value.startsWith('failed'))
+        .map((e) => e.key)
+        .toList();
+    if (failed.isEmpty) {
+      showToast(message: okText);
+    } else {
+      showToast(message: "$failText: ${failed.join(', ')}");
     }
   }
 

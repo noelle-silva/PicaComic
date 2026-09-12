@@ -4,8 +4,6 @@ import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/foundation/history.dart';
 import 'package:pica_comic/foundation/image_loader/cached_image.dart';
 import 'package:pica_comic/network/download.dart';
-import 'package:pica_comic/network/pica_server.dart';
-import 'package:pica_comic/network/pica_server_auth_sync.dart';
 import 'accounts_page.dart';
 import 'package:pica_comic/pages/download_page.dart';
 import 'package:pica_comic/pages/tools.dart';
@@ -15,6 +13,7 @@ import 'package:pica_comic/tools/translations.dart';
 import 'image_favorites.dart';
 import 'server_library_page.dart';
 import 'server_tasks_page.dart';
+import 'package:pica_comic/pages/settings/settings_page.dart';
 
 class MePage extends StatelessWidget {
   const MePage({super.key});
@@ -44,14 +43,6 @@ class MePage extends StatelessWidget {
                             const SizedBox(
                               height: 12,
                             ),
-                            buildAccount(width),
-                            const SizedBox(
-                              height: 12,
-                            ),
-                            buildDownload(context, width),
-                            const SizedBox(
-                              height: 12,
-                            ),
                             buildServerLibrary(context, width),
                             const SizedBox(
                               height: 12,
@@ -60,7 +51,11 @@ class MePage extends StatelessWidget {
                             const SizedBox(
                               height: 12,
                             ),
-                            buildServerAuthSync(context, width),
+                            buildAccount(width),
+                            const SizedBox(
+                              height: 12,
+                            ),
+                            buildDownload(context, width),
                           ],
                         ),
                       ),
@@ -78,20 +73,16 @@ class MePage extends StatelessWidget {
                               height: 12,
                             ),
                             buildTools(width),
+                            const SizedBox(
+                              height: 12,
+                            ),
+                            buildSettings(width),
                           ],
                         ),
                       ),
                     ],
                   )
                 else ...[
-                  const SizedBox(
-                    height: 12,
-                  ),
-                  buildAccount(width),
-                  const SizedBox(
-                    height: 12,
-                  ),
-                  buildDownload(context, width),
                   const SizedBox(
                     height: 12,
                   ),
@@ -103,7 +94,11 @@ class MePage extends StatelessWidget {
                   const SizedBox(
                     height: 12,
                   ),
-                  buildServerAuthSync(context, width),
+                  buildAccount(width),
+                  const SizedBox(
+                    height: 12,
+                  ),
+                  buildDownload(context, width),
                   const SizedBox(
                     height: 12,
                   ),
@@ -112,6 +107,10 @@ class MePage extends StatelessWidget {
                     height: 12,
                   ),
                   buildTools(width),
+                  const SizedBox(
+                    height: 12,
+                  ),
+                  buildSettings(width),
                 ],
               ],
             ),
@@ -221,7 +220,7 @@ class MePage extends StatelessWidget {
   Widget buildDownload(BuildContext context, double width) {
     return _MePageCard(
       icon: const Icon(Icons.download_for_offline),
-      title: "已下载".tl,
+      title: "本地已下载".tl,
       description:
           "共 @a 部漫画".tlParams({"a": DownloadManager().total.toString()}),
       onTap: () => context.to(() => const DownloadPage()),
@@ -246,41 +245,12 @@ class MePage extends StatelessWidget {
     );
   }
 
-  Widget buildServerAuthSync(BuildContext context, double width) {
+  Widget buildSettings(double width) {
     return _MePageCard(
-      icon: const Icon(Icons.cloud_sync_outlined),
-      title: "同步登录态到服务器".tl,
-      description: "把本地登录态更新到服务器（明文）".tl,
-      onTap: () async {
-        if (!PicaServer.instance.enabled) {
-          showToast(message: "未配置服务器".tl);
-          return;
-        }
-
-        final dialog = showLoadingDialog(
-          context,
-          barrierDismissible: false,
-          allowCancel: false,
-          message: "同步中".tl,
-        );
-        try {
-          final result = await PicaServerAuthSync.syncAll();
-          dialog.close();
-
-          final failed = result.statusBySource.entries
-              .where((e) => e.value.startsWith('failed'))
-              .map((e) => e.key)
-              .toList();
-          if (failed.isEmpty) {
-            showToast(message: "同步完成".tl);
-          } else {
-            showToast(message: "${"同步失败".tl}: ${failed.join(', ')}");
-          }
-        } catch (e) {
-          dialog.close();
-          showToast(message: e.toString());
-        }
-      },
+      icon: const Icon(Icons.settings),
+      title: "设置".tl,
+      description: "应用设置与偏好".tl,
+      onTap: () => SettingsPage.open(),
     );
   }
 
