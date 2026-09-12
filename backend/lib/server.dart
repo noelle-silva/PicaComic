@@ -4821,6 +4821,22 @@ Handler buildHandler({
     );
   });
 
+  api.get('/v1/comics/contains', (Request req) {
+    final sourceKey =
+        (req.url.queryParameters['source'] ?? '').toString().trim();
+    final target = (req.url.queryParameters['target'] ?? '').toString().trim();
+    if (sourceKey.isEmpty || target.isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing source or target'});
+    }
+    final canonicalId = _canonicalComicId(source: sourceKey, target: target);
+    final exists = canonicalId.isNotEmpty && taskRunner._comicExists(canonicalId);
+    return _json(200, {
+      'ok': true,
+      'exists': exists,
+      if (exists) 'comicId': canonicalId,
+    });
+  });
+
   api.get('/v1/comics/<id>', (Request req, String id) {
     final row = db.select(
       '''

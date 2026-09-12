@@ -71,6 +71,7 @@ dart run bin/server.dart
   - `zip`：下载目录打包后的 zip（仅用于传输；服务器会解压为图片并丢弃 zip）
   - `cover`：可选封面文件
 - `GET /api/v1/comics`
+- `GET /api/v1/comics/contains?source={k}&target={id}`：查询漫画是否已下载到服务器（与收藏查询对称）
 - `GET /api/v1/comics/{id}/cover`
 - `GET /api/v1/comics/{id}/read`：返回章节信息（用于在线阅读）
 - `GET /api/v1/comics/{id}/pages?ep={ep}`：返回指定章节的页面文件名列表
