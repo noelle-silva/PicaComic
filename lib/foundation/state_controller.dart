@@ -81,6 +81,11 @@ abstract class StateController {
 
   List<Pair<Object?, void Function()>> stateUpdaters = [];
 
+  /// 移除一个更新回调（与 [stateUpdaters] 中的项成对使用）。
+  void removeUpdater(void Function() updater) {
+    stateUpdaters.removeWhere((element) => element.right == updater);
+  }
+
   void update([List<Object>? ids]) {
     if (ids == null) {
       for (var element in stateUpdaters) {
@@ -121,6 +126,7 @@ class StateBuilder<T extends StateController> extends StatefulWidget {
     this.tag,
     required this.builder,
     this.id,
+    this.keepAlive = false,
   });
 
   final T? init;
@@ -132,6 +138,11 @@ class StateBuilder<T extends StateController> extends StatefulWidget {
   final Object? tag;
 
   final Widget Function(T controller) builder;
+
+  /// 控制器跨组件销毁保留（不随组件卸载移除），组件重建时复用已有控制器。
+  ///
+  /// 仅在 [tag] 非空时生效（需要稳定的身份标识才能精确复用）；[tag] 为空时退化为普通模式。
+  final bool keepAlive;
 
   Widget builderWrapped(StateController controller) {
     return builder(controller as T);
@@ -155,21 +166,29 @@ class _StateBuilderState<T extends StateController>
     extends State<StateBuilder> {
   late T controller;
 
+  bool get _keepAlive => widget.keepAlive && widget.tag != null;
+
+  late final void Function() _onControllerUpdate = () {
+    if (mounted) {
+      setState(() {});
+    }
+  };
+
   @override
   void initState() {
     if (widget.init != null) {
-      StateController.put(widget.init!, tag: widget.tag, autoRemove: true);
+      if (_keepAlive) {
+        StateController.putIfNotExists(widget.init!, tag: widget.tag);
+      } else {
+        StateController.put(widget.init!, tag: widget.tag, autoRemove: true);
+      }
     }
     try {
       controller = StateController.find<T>(tag: widget.tag);
     } catch (e) {
       throw "Controller Not Found";
     }
-    controller.stateUpdaters.add(Pair(widget.id, () {
-      if (mounted) {
-        setState(() {});
-      }
-    }));
+    controller.stateUpdaters.add(Pair(widget.id, _onControllerUpdate));
     widget.initStateWrapped(controller);
     super.initState();
   }
@@ -177,7 +196,10 @@ class _StateBuilderState<T extends StateController>
   @override
   void dispose() {
     widget.disposeWrapped(controller);
-    StateController.remove<T>(widget.tag, true);
+    controller.removeUpdater(_onControllerUpdate);
+    if (!_keepAlive) {
+      StateController.remove<T>(widget.tag, true);
+    }
     super.dispose();
   }
 

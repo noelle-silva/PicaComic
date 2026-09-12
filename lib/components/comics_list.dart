@@ -126,6 +126,18 @@ abstract class ComicsPage<T extends BaseComic> extends StatelessWidget {
 
   String? get tag;
 
+  /// 数据控制器跨页面重建保留（换夹/换页后回到原位的场景）。
+  ///
+  /// 需要稳定的 [tag] 作为身份标识；[tag] 为空时自动退化为普通生命周期。
+  bool get keepDataAlive => false;
+
+  /// 滚动位置跨路由实例记忆（push 型页面关闭后再次打开时恢复原位）。
+  bool get persistScrollAcrossRoutes => false;
+
+  /// 列表滚动位置的记忆标识（与数据身份一致，同源推导）。
+  Key? get scrollStorageKey =>
+      tag == null ? null : PageStorageKey("comics:$tag");
+
   Widget? get tailing => null;
 
   Widget? get header => null;
@@ -165,6 +177,7 @@ abstract class ComicsPage<T extends BaseComic> extends StatelessWidget {
     Widget body = StateBuilder<ComicsPageLogic<T>>(
         init: ComicsPageLogic<T>(),
         tag: tag,
+        keepAlive: keepDataAlive,
         builder: (logic) {
           if (logic.dividedComics?[logic.current] == null &&
               logic.message == null &&
@@ -210,6 +223,7 @@ abstract class ComicsPage<T extends BaseComic> extends StatelessWidget {
               }
               if (comics.isEmpty) {
                 return SmoothCustomScrollView(
+                  key: scrollStorageKey,
                   slivers: [
                     if (title != null)
                       SliverAppbar(
@@ -225,6 +239,7 @@ abstract class ComicsPage<T extends BaseComic> extends StatelessWidget {
                 );
               }
               return SmoothCustomScrollView(
+                key: scrollStorageKey,
                 slivers: [
                   if (title != null)
                     SliverAppbar(
@@ -268,6 +283,7 @@ abstract class ComicsPage<T extends BaseComic> extends StatelessWidget {
               }
               if (comics.isEmpty) {
                 return SmoothCustomScrollView(
+                  key: scrollStorageKey,
                   slivers: [
                     if (title != null)
                       SliverAppbar(
@@ -283,6 +299,7 @@ abstract class ComicsPage<T extends BaseComic> extends StatelessWidget {
                 );
               }
               Widget body = SmoothCustomScrollView(
+                key: scrollStorageKey,
                 slivers: [
                   if (title != null)
                     SliverAppbar(
@@ -354,6 +371,10 @@ abstract class ComicsPage<T extends BaseComic> extends StatelessWidget {
             }
           }
         });
+
+    if (persistScrollAcrossRoutes) {
+      body = PageStorage(bucket: sharedScrollStorage, child: body);
+    }
 
     if (header != null && UiMode.m1(context)) {
       body = SafeArea(
