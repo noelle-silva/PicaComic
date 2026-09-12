@@ -47,6 +47,7 @@ dart run bin/server.dart
 - `GET /api/v1/health`
 - `PUT /api/v1/auth/{source}`：保存该漫画源的会话/配置（JSON，明文存储）
 - `GET /api/v1/auth/{source}`：查询该漫画源是否已配置
+- `GET /api/v1/auth/{source}/data`：读取该漫画源已保存的会话内容（JSON，明文）
 - `GET /api/v1/auth`：列出已配置的漫画源
 - `POST /api/v1/tasks/download`：创建“服务端下载并入库”任务（异步，JSON）
   - `source`：`picacg | ehentai | jm | hitomi | htmanga | nhentai`

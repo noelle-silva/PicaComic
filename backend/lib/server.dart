@@ -3903,6 +3903,27 @@ Handler buildHandler({
     });
   });
 
+  api.get('/v1/auth/<source>/data', (Request req, String source) {
+    source = source.trim();
+    if (!isValidSource(source)) {
+      return _json(400, {'ok': false, 'error': 'invalid source'});
+    }
+    final row = db.select(
+      'select data_json, updated_at from auth_sessions where source = ?',
+      [source],
+    ).firstOrNull;
+    if (row == null) {
+      return _json(200, {'ok': true, 'source': source, 'exists': false});
+    }
+    return _json(200, {
+      'ok': true,
+      'source': source,
+      'exists': true,
+      'updatedAt': row['updated_at'],
+      'data': _tryDecodeJson(row['data_json']),
+    });
+  });
+
   api.post('/v1/tasks/download', (Request req) async {
     final json = await readJsonMap(req);
     if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
