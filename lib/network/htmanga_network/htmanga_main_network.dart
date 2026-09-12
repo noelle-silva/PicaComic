@@ -432,21 +432,48 @@ class HtmangaNetwork {
   }
 
   Future<Res<List<String>>> getImages(String id) async {
-    var res = await get("$baseUrl/photos-gallery-aid-$id.html");
+    var res = await get("$baseUrl/photos-gallery-aid-$id.html", cache: false);
     if (res.error) {
       return Res(null, errorMessage: res.errorMessage);
     }
     try {
-      var urls = RegExp(r"(?<=//)[\w./\[\]()-]+").allMatches(res.data);
-      var images = <String>[];
-      for (var url in urls) {
-        images.add("https://${url[0]!}");
-      }
-      return Res(images);
+      return Res(_parseGalleryImages(res.data));
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Data Analyse", "$e\n$s");
       return Res(null, errorMessage: e.toString());
     }
+  }
+
+  /// 解析画廊页的图片列表
+  ///
+  /// 新版页面把图片放在脚本的 imglist 中, 链接带 ?verify= 时效签名,
+  /// 必须完整保留查询参数, 否则图片服务器会返回 403;
+  /// 旧版页面直接在 HTML 中给出图片链接, 作为兜底。
+  List<String> _parseGalleryImages(String html) {
+    var images = <String>[];
+    var host = RegExp(r'fast_img_host\s*=\s*\\?"([^"\\]*)\\?"')
+            .firstMatch(html)
+            ?.group(1) ??
+        "";
+    for (var match
+        in RegExp(r'url\s*:\s*[^",]*"((?:https?:)?//[^"\\]+)').allMatches(html)) {
+      var url = match.group(1)!;
+      if (url.startsWith("//")) {
+        url = "$host$url";
+        if (!url.startsWith("http")) {
+          url = "https:$url";
+        }
+      }
+      images.add(url);
+    }
+    if (images.isNotEmpty) {
+      return images;
+    }
+    for (var url
+        in RegExp(r"(?<=//)[\w./\[\]()-]+(?:\?[\w\-=&%]+)?").allMatches(html)) {
+      images.add("https://${url[0]!}");
+    }
+    return images;
   }
 
   /// 获取收藏夹
