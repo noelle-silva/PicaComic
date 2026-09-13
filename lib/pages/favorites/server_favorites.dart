@@ -8,6 +8,8 @@ import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/pages/comic_page.dart';
 import 'package:pica_comic/tools/translations.dart';
 
+import 'server_favorite_dialogs.dart';
+
 /// 服务器收藏内容视图（嵌入收藏页内容区显示）。
 class ServerFavoritesView extends StatefulWidget {
   const ServerFavoritesView({super.key});
@@ -138,57 +140,9 @@ class _ServerFavoritesViewState extends State<ServerFavoritesView> {
     }
   }
 
-  Future<String?> _promptFolderName({
-    required String title,
-    String? initial,
-  }) async {
-    final controller = TextEditingController(text: initial ?? '');
-    final focusNode = FocusNode()..requestFocus();
-    final res = await showDialog<String>(
-      context: context,
-      builder: (context) {
-        return SimpleDialog(
-          title: Text(title),
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
-              child: TextField(
-                controller: controller,
-                focusNode: focusNode,
-                decoration: InputDecoration(
-                  border: const OutlineInputBorder(),
-                  labelText: "名称".tl,
-                ),
-                onEditingComplete: () {
-                  final v = controller.text.trim();
-                  Navigator.of(context).pop(v.isEmpty ? null : v);
-                },
-              ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 40,
-              child: Center(
-                child: FilledButton(
-                  onPressed: () {
-                    final v = controller.text.trim();
-                    Navigator.of(context).pop(v.isEmpty ? null : v);
-                  },
-                  child: Text("提交".tl),
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-    focusNode.dispose();
-    controller.dispose();
-    return res?.trim();
-  }
-
   Future<void> _createFolder() async {
-    final name = await _promptFolderName(title: "创建收藏夹".tl);
+    final name =
+        await promptServerFavoriteFolderName(context, title: "创建收藏夹".tl);
     if (name == null || name.isEmpty) return;
     try {
       await PicaServer.instance.createFavoriteFolder(name);
@@ -202,7 +156,13 @@ class _ServerFavoritesViewState extends State<ServerFavoritesView> {
     final changed = await context.to<bool>(
       () => ServerFavoriteFoldersPage(
         folders: folders.map((e) => e.name).toList(),
-        selected: selectedFolder,
+        onCreate: (name) => PicaServer.instance.createFavoriteFolder(name),
+        onRename: (from, to) =>
+            PicaServer.instance.renameFavoriteFolder(from, to),
+        onDelete: (name, moveTo) =>
+            PicaServer.instance.deleteFavoriteFolder(name, moveTo: moveTo),
+        onReorder: (names) =>
+            PicaServer.instance.reorderFavoriteFolders(names),
       ),
     );
     if (changed == true) {
@@ -542,15 +502,30 @@ class _ServerFavoriteTile extends ComicTile {
   void onTap_() => onTap();
 }
 
+/// 服务器收藏文件夹管理页（源信息收藏 / 资源收藏共用，数据操作由调用方注入）。
 class ServerFavoriteFoldersPage extends StatefulWidget {
   const ServerFavoriteFoldersPage({
     super.key,
     required this.folders,
-    required this.selected,
+    required this.onCreate,
+    required this.onRename,
+    required this.onDelete,
+    required this.onReorder,
   });
 
   final List<String> folders;
-  final String selected;
+
+  /// 创建文件夹。
+  final Future<void> Function(String name) onCreate;
+
+  /// 重命名文件夹。
+  final Future<void> Function(String from, String to) onRename;
+
+  /// 删除文件夹并把条目转移到 [moveTo]。
+  final Future<void> Function(String name, String moveTo) onDelete;
+
+  /// 按给定顺序持久化文件夹排序。
+  final Future<void> Function(List<String> names) onReorder;
 
   @override
   State<ServerFavoriteFoldersPage> createState() =>
@@ -561,55 +536,12 @@ class _ServerFavoriteFoldersPageState extends State<ServerFavoriteFoldersPage> {
   late List<String> folders = List<String>.from(widget.folders);
   bool changed = false;
 
-  Future<String?> _promptName(String title, {String? initial}) async {
-    final controller = TextEditingController(text: initial ?? '');
-    final focusNode = FocusNode()..requestFocus();
-    final res = await showDialog<String>(
-      context: context,
-      builder: (context) => SimpleDialog(
-        title: Text(title),
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
-            child: TextField(
-              controller: controller,
-              focusNode: focusNode,
-              decoration: InputDecoration(
-                border: const OutlineInputBorder(),
-                labelText: "名称".tl,
-              ),
-              onEditingComplete: () {
-                final v = controller.text.trim();
-                Navigator.of(context).pop(v.isEmpty ? null : v);
-              },
-            ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            height: 40,
-            child: Center(
-              child: FilledButton(
-                onPressed: () {
-                  final v = controller.text.trim();
-                  Navigator.of(context).pop(v.isEmpty ? null : v);
-                },
-                child: Text("提交".tl),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-    focusNode.dispose();
-    controller.dispose();
-    return res?.trim();
-  }
-
   Future<void> _createFolder() async {
-    final name = await _promptName("创建收藏夹".tl);
+    final name =
+        await promptServerFavoriteFolderName(context, title: "创建收藏夹".tl);
     if (name == null || name.isEmpty) return;
     try {
-      await PicaServer.instance.createFavoriteFolder(name);
+      await widget.onCreate(name);
       changed = true;
       setState(() {
         folders.add(name);
@@ -620,10 +552,11 @@ class _ServerFavoriteFoldersPageState extends State<ServerFavoriteFoldersPage> {
   }
 
   Future<void> _renameFolder(String from) async {
-    final to = await _promptName("重命名".tl, initial: from);
+    final to = await promptServerFavoriteFolderName(context,
+        title: "重命名".tl, initial: from);
     if (to == null || to.isEmpty || to == from) return;
     try {
-      await PicaServer.instance.renameFavoriteFolder(from, to);
+      await widget.onRename(from, to);
       changed = true;
       setState(() {
         final idx = folders.indexOf(from);
@@ -677,7 +610,7 @@ class _ServerFavoriteFoldersPageState extends State<ServerFavoriteFoldersPage> {
     );
     if (moveTo == null) return;
     try {
-      await PicaServer.instance.deleteFavoriteFolder(name, moveTo: moveTo);
+      await widget.onDelete(name, moveTo);
       changed = true;
       setState(() {
         folders.remove(name);
@@ -689,7 +622,7 @@ class _ServerFavoriteFoldersPageState extends State<ServerFavoriteFoldersPage> {
 
   Future<void> _persistOrder() async {
     try {
-      await PicaServer.instance.reorderFavoriteFolders(folders);
+      await widget.onReorder(folders);
       changed = true;
     } catch (e) {
       showToast(message: e.toString());

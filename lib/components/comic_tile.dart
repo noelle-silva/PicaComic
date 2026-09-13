@@ -38,6 +38,11 @@ abstract class ComicTile extends StatelessWidget {
 
   List<ComicTileMenuOption>? get addonMenuOptions => null;
 
+  /// 卡片尾部的操作按钮（如菜单按钮）；默认无。
+  ///
+  /// 详细模式渲染在行尾，封面模式渲染在封面右上角。
+  Widget? get trailing => null;
+
   /// Comic ID, used to identify a comic.
   String? get comicID => null;
 
@@ -346,6 +351,7 @@ abstract class ComicTile extends StatelessWidget {
                     maxLines: maxLines,
                   ),
                 ),
+                if (trailing != null) trailing!,
               ],
             ),
           ));
@@ -411,7 +417,20 @@ abstract class ComicTile extends StatelessWidget {
                   child: const SizedBox.expand(),
                 ),
               ),
-            )
+            ),
+            if (trailing != null)
+              Positioned(
+                top: 4,
+                right: 4,
+                child: Material(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .surface
+                      .withValues(alpha: 0.8),
+                  shape: const CircleBorder(),
+                  child: trailing,
+                ),
+              ),
           ],
         ),
       ),

@@ -788,6 +788,9 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
   /// 是否提供本地收藏。
   bool get enableLocalFavorite => true;
 
+  /// 操作区末尾的额外条目（默认无，由具体页面扩展）。
+  List<Widget> buildExtraActionItems(ComicPageLogic<T> logic) => const [];
+
   /// 该漫画在私人服务器体系中的源标识；null 表示不支持服务器功能。
   String? get serverSourceKey => switch (sourceKey) {
         'picacg' => 'picacg',
@@ -1304,7 +1307,8 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
     );
   }
 
-  Widget buildActions(ComicPageLogic logic, BuildContext context, bool center) {
+  Widget buildActions(
+      ComicPageLogic<T> logic, BuildContext context, bool center) {
     if (logic.loading) {
       return Container(
         decoration: BoxDecoration(
@@ -1321,38 +1325,11 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
 
     Widget buildItem(String title, IconData icon, VoidCallback? onTap,
         [VoidCallback? onLongPress]) {
-      final body = SizedBox(
-        height: 72,
-        width: 64,
-        child: Column(
-          children: [
-            const SizedBox(
-              height: 12,
-            ),
-            Icon(
-              icon,
-              size: 24,
-              color: Theme.of(context).colorScheme.primary,
-            ),
-            const SizedBox(
-              height: 8,
-            ),
-            Text(
-              title,
-              style: const TextStyle(fontSize: 12),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              softWrap: false,
-              textAlign: TextAlign.center,
-            )
-          ],
-        ),
-      );
-      return InkWell(
+      return ComicActionItem(
+        title: title,
+        icon: icon,
         onTap: onTap,
         onLongPress: onLongPress,
-        borderRadius: const BorderRadius.all(Radius.circular(8)),
-        child: onTap == null ? Opacity(opacity: 0.5, child: body) : body,
       );
     }
 
@@ -1674,6 +1651,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                     ),
                   ),
                 ),
+              ...buildExtraActionItems(logic),
             ],
           ),
           if (width < 500)
@@ -2398,5 +2376,58 @@ class _FavoriteComicWidgetState extends State<FavoriteComicWidget> {
             )
           ],
         ));
+  }
+}
+
+/// 详情页操作区的图标按钮条目（操作区各条目与扩展条目共用）。
+class ComicActionItem extends StatelessWidget {
+  const ComicActionItem({
+    required this.title,
+    required this.icon,
+    required this.onTap,
+    this.onLongPress,
+    super.key,
+  });
+
+  final String title;
+  final IconData icon;
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+
+  @override
+  Widget build(BuildContext context) {
+    final body = SizedBox(
+      height: 72,
+      width: 64,
+      child: Column(
+        children: [
+          const SizedBox(
+            height: 12,
+          ),
+          Icon(
+            icon,
+            size: 24,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          const SizedBox(
+            height: 8,
+          ),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 12),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            softWrap: false,
+            textAlign: TextAlign.center,
+          )
+        ],
+      ),
+    );
+    return InkWell(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      borderRadius: const BorderRadius.all(Radius.circular(8)),
+      child: onTap == null ? Opacity(opacity: 0.5, child: body) : body,
+    );
   }
 }
