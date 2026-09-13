@@ -24,6 +24,8 @@ import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/pages/favorites/local_favorites.dart';
 import 'package:pica_comic/pages/reader/comic_reading_page.dart';
 import 'package:pica_comic/pages/search_result_page.dart';
+import 'package:pica_comic/pages/server_comic_page.dart';
+import 'package:pica_comic/pages/server_subscription_dialogs.dart';
 import 'package:pica_comic/tools/tags_translation.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'show_image_page.dart';
@@ -797,6 +799,79 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
   /// 标签组末尾的附加操作组件（默认无，如服务器漫画的标签搜索按钮）。
   Widget? buildTagAction(ComicPageLogic logic, BuildContext context) => null;
 
+  /// 订阅面板：新建订阅或管理已有订阅（级别 / 频率 / 取消）。
+  Future<void> openSubscriptionPanel(ComicPageLogic logic) async {
+    final serverSource = serverSourceKey;
+    if (serverSource == null) return;
+
+    ServerSubscription? current;
+    try {
+      current = await PicaServer.instance
+          .getSubscription(source: serverSource, target: id);
+    } catch (e) {
+      showToast(message: e.toString());
+      return;
+    }
+
+    if (!context.mounted) return;
+    final result = await showSubscriptionEditDialog(
+      context,
+      autoDownload: current?.autoDownload ?? true,
+      intervalMinutes: current?.intervalMinutes,
+      allowRemove: current != null,
+    );
+    if (result == null) return;
+    if (!context.mounted) return;
+    try {
+      if (!result.remove && current == null) {
+        final local = toLocalFavoriteItem();
+        await PicaServer.instance.createSubscription(
+          source: serverSource,
+          target: id,
+          title: local.name,
+          subtitle: local.author,
+          cover: local.coverPath,
+          tags: local.tags,
+          autoDownload: result.autoDownload,
+          intervalMinutes: result.intervalMinutes,
+        );
+        showToast(message: "已订阅".tl);
+        logic.applyServerStatus(
+          logic.serverStatus.copyWith(subscribed: true),
+        );
+      } else if (!result.remove) {
+        await PicaServer.instance.updateSubscription(
+          source: serverSource,
+          target: id,
+          autoDownload: result.autoDownload,
+          intervalMinutes: result.intervalMinutes,
+          clearInterval: result.intervalMinutes == null,
+        );
+        showToast(message: "已保存".tl);
+      } else {
+        showConfirmDialog(
+          context,
+          "取消订阅".tl,
+          "不再检查该漫画的更新，确定取消？".tl,
+          () async {
+            try {
+              await PicaServer.instance
+                  .removeSubscription(source: serverSource, target: id);
+              showToast(message: "已取消订阅".tl);
+              logic.applyServerStatus(
+                logic.serverStatus.copyWith(subscribed: false),
+              );
+            } catch (e) {
+              showToast(message: e.toString());
+            }
+          },
+        );
+      }
+    } catch (e) {
+      showToast(message: e.toString());
+    }
+  }
+
   /// 该漫画在私人服务器体系中的源标识；null 表示不支持服务器功能。
   String? get serverSourceKey => switch (sourceKey) {
         'picacg' => 'picacg',
@@ -823,14 +898,18 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
         PicaServer.instance
             .containsFavorite(sourceKey: serverSource, target: id)
             .then((e) => e.exists),
+        PicaServer.instance
+            .containsSubscription(source: serverSource, target: id),
       ]);
       final presence = results[0] as ServerComicPresence;
       final favorite = results[1] as bool;
+      final subscribed = results[2] as bool;
 
       if (presence.active) {
         return ComicServerStatus(
           downloadState: ServerDownloadState.downloading,
           favorite: favorite,
+          subscribed: subscribed,
           comicId: presence.comicId,
         );
       }
@@ -838,6 +917,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
         return ComicServerStatus(
           downloadState: ServerDownloadState.none,
           favorite: favorite,
+          subscribed: subscribed,
         );
       }
 
@@ -847,6 +927,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
         return ComicServerStatus(
           downloadState: ServerDownloadState.complete,
           favorite: favorite,
+          subscribed: subscribed,
           comicId: comicId,
         );
       }
@@ -861,6 +942,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
             ? ServerDownloadState.complete
             : ServerDownloadState.partial,
         favorite: favorite,
+        subscribed: subscribed,
         comicId: comicId,
         downloadedEps: downloadedEps,
       );
@@ -1423,6 +1505,15 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
       );
     }
 
+    Widget buildSubscriptionItem(ComicPageLogic logic) {
+      final subscribed = logic.serverStatus.subscribed == true;
+      return buildItem(
+        subscribed ? "已订阅".tl : "订阅".tl,
+        subscribed ? Icons.notifications_active : Icons.notifications_none,
+        () => openSubscriptionPanel(logic),
+      );
+    }
+
     final width = MediaQuery.of(context).size.width;
     final openSource = openSourceComicPage;
 
@@ -1580,6 +1671,23 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                   enableServerActions &&
                   serverSourceKey != null)
                 buildServerDownloadItem(logic),
+              if (PicaServer.instance.enabled &&
+                  enableServerActions &&
+                  serverSourceKey != null)
+                buildSubscriptionItem(logic),
+              if (PicaServer.instance.enabled &&
+                  enableServerActions &&
+                  serverSourceKey != null &&
+                  logic.serverStatus.comicId != null &&
+                  (logic.serverStatus.downloadState ==
+                          ServerDownloadState.complete ||
+                      logic.serverStatus.downloadState ==
+                          ServerDownloadState.partial))
+                buildItem(
+                    "服务器资源".tl,
+                    Icons.cloud_queue,
+                    () => context.to(() => ServerComicPage(
+                        comicId: logic.serverStatus.comicId!))),
               buildItem("下载".tl, Icons.download, download),
               if (downloadManager.isExists(downloadedId))
                 buildItem("上传服务器".tl, Icons.cloud_upload, () async {
