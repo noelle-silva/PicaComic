@@ -1559,6 +1559,391 @@ class _TaskRunner {
   }
 }
 
+/// 订阅调度器：周期检查到期订阅；发现更新按订阅级别记录 / 自动创建下载任务。
+///
+/// - 订阅更新（level='update'）：记录更新历史，不下载；
+/// - 订阅+下载（level='download'）：记录更新历史并创建下载任务（服务端自动收敛缺失集）。
+/// - 检查失败（网络/登录态）：记录失败历史，下次按频率继续。
+/// 订阅检查结果（手动检查反馈）。
+class _SubscriptionCheckResult {
+  final String source;
+  final String target;
+
+  /// 'updated' | 'none' | 'failed'
+  final String status;
+  final List<String> newItems;
+  final int? totalItems;
+  final String? latestItem;
+
+  /// 最近几话及其更新时间（倒序，最新在前）。
+  final List<Map<String, Object?>> recentItems;
+  final bool firstCheck;
+  final String? message;
+  final int checkedAt;
+
+  const _SubscriptionCheckResult({
+    required this.source,
+    required this.target,
+    required this.status,
+    this.newItems = const [],
+    this.totalItems,
+    this.latestItem,
+    this.recentItems = const [],
+    this.firstCheck = false,
+    this.message,
+    required this.checkedAt,
+  });
+
+  Map<String, Object?> toJson() => {
+        'source': source,
+        'target': target,
+        'status': status,
+        'newItems': newItems,
+        'totalItems': totalItems,
+        'latestItem': latestItem,
+        'recentItems': recentItems,
+        'firstCheck': firstCheck,
+        'message': message,
+        'checkedAt': checkedAt,
+      };
+}
+
+class _SubscriptionScheduler {
+  _SubscriptionScheduler({
+    required this.db,
+    required this.taskRunner,
+    required this.readDefaultInterval,
+  });
+
+  final Database db;
+  final _TaskRunner taskRunner;
+  final int Function() readDefaultInterval;
+
+  static const _tickInterval = Duration(seconds: 30);
+
+  Timer? _timer;
+  bool _checking = false;
+  final Set<String> _inFlight = {};
+
+  void start() {
+    _timer?.cancel();
+    _timer = Timer.periodic(_tickInterval, (_) => unawaited(_tick()));
+    unawaited(_tick());
+  }
+
+  void stop() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  Future<void> _tick() async {
+    if (_checking) return;
+    _checking = true;
+    try {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final rows = db.select(
+        '''
+        select source, target, title, subtitle, cover, level, interval_minutes, baseline_json
+        from subscriptions
+        where enabled = 1 and next_check_at <= ?
+        order by next_check_at asc
+        ''',
+        [now],
+      );
+      for (final row in rows) {
+        await _runCheck(row);
+      }
+    } finally {
+      _checking = false;
+    }
+  }
+
+  /// 手动立即检查：同步执行并返回结果；订阅不存在或已在检查中返回 null。
+  Future<_SubscriptionCheckResult?> checkNow(
+      String source, String target) async {
+    final row = db.select(
+      '''
+      select source, target, title, subtitle, cover, level,
+             interval_minutes, baseline_json
+      from subscriptions
+      where source = ? and target = ?
+      ''',
+      [source, target],
+    ).firstOrNull;
+    if (row == null) return null;
+    return _runCheck(row);
+  }
+
+  /// 执行一次检查；同一订阅并发时返回 null。
+  Future<_SubscriptionCheckResult?> _runCheck(Map<String, Object?> row) async {
+    final source = (row['source'] ?? '').toString();
+    final target = (row['target'] ?? '').toString();
+    final level = (row['level'] ?? '').toString();
+    if (source.isEmpty || target.isEmpty) return null;
+
+    final key = '$source|$target';
+    if (_inFlight.contains(key)) return null;
+    _inFlight.add(key);
+    try {
+      final intervalRaw =
+          int.tryParse((row['interval_minutes'] ?? '').toString());
+      final interval = (intervalRaw != null && intervalRaw > 0)
+          ? intervalRaw
+          : readDefaultInterval();
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      // 先排下次检查：失败也按频率继续。
+      db.execute(
+        'update subscriptions set next_check_at = ?, updated_at = ? where source = ? and target = ?',
+        [now + interval * 60000, now, source, target],
+      );
+
+      List<_SubscriptionItem> items;
+      try {
+        items = await _fetchSubscriptionItems(
+          source: source,
+          target: target,
+          auth: taskRunner.readAuth(source),
+        );
+      } catch (e) {
+        _recordFailedCheck(source, target, now, e.toString());
+        return _SubscriptionCheckResult(
+          source: source,
+          target: target,
+          status: 'failed',
+          message: e.toString(),
+          checkedAt: now,
+        );
+      }
+
+      final hasEps = _supportsPartialEps(source);
+      final totalItems = hasEps ? items.length : null;
+      final latestItem = (hasEps && items.isNotEmpty) ? items.last.name : null;
+      final recentItems = hasEps
+          ? items.reversed
+              .take(5)
+              .map((e) => <String, Object?>{
+                    'name': e.name,
+                    'updatedAt': e.timeMs,
+                  })
+              .toList()
+          : const <Map<String, Object?>>[];
+
+      final baseline = _decodeSubscriptionItems(row['baseline_json']);
+      final baselineNames = baseline.map((e) => e.name).toSet();
+      final newItems = items
+          .where((e) => !baselineNames.contains(e.name))
+          .toList(growable: false);
+      final newItemNames = newItems.map((e) => e.name).toList();
+
+      if (baseline.isEmpty) {
+        // 首次检查：建立基线（不算更新）；下载级别同时触发一次全量下载。
+        db.execute(
+          'update subscriptions set baseline_json = ?, last_check_at = ?, last_error = null, updated_at = ? where source = ? and target = ?',
+          [_encodeSubscriptionItems(items), now, now, source, target],
+        );
+        if (level == 'download') {
+          _enqueueDownload(
+            source: source,
+            target: target,
+            title: (row['title'] ?? '').toString(),
+            subtitle: (row['subtitle'] ?? '').toString(),
+            cover: (row['cover'] ?? '').toString(),
+            items: items,
+            newItems: const [],
+          );
+        }
+        return _SubscriptionCheckResult(
+          source: source,
+          target: target,
+          status: 'none',
+          firstCheck: true,
+          totalItems: totalItems,
+          latestItem: latestItem,
+          recentItems: recentItems,
+          checkedAt: now,
+        );
+      }
+
+      if (newItems.isNotEmpty) {
+        _recordUpdatedCheck(source, target, now, newItemNames, items.length);
+        db.execute(
+          'update subscriptions set baseline_json = ?, last_check_at = ?, last_error = null, updated_at = ? where source = ? and target = ?',
+          [_encodeSubscriptionItems(items), now, now, source, target],
+        );
+        if (level == 'download') {
+          _enqueueDownload(
+            source: source,
+            target: target,
+            title: (row['title'] ?? '').toString(),
+            subtitle: (row['subtitle'] ?? '').toString(),
+            cover: (row['cover'] ?? '').toString(),
+            items: items,
+            newItems: newItemNames,
+          );
+        }
+        return _SubscriptionCheckResult(
+          source: source,
+          target: target,
+          status: 'updated',
+          newItems: newItemNames,
+          totalItems: totalItems,
+          latestItem: latestItem,
+          recentItems: recentItems,
+          checkedAt: now,
+        );
+      }
+
+      // 无更新：仅刷新检查时间。
+      db.execute(
+        'update subscriptions set last_check_at = ?, last_error = null, updated_at = ? where source = ? and target = ?',
+        [now, now, source, target],
+      );
+      return _SubscriptionCheckResult(
+        source: source,
+        target: target,
+        status: 'none',
+        totalItems: totalItems,
+        latestItem: latestItem,
+        recentItems: recentItems,
+        checkedAt: now,
+      );
+    } finally {
+      _inFlight.remove(key);
+    }
+  }
+
+  void _recordUpdatedCheck(
+    String source,
+    String target,
+    int checkedAt,
+    List<String> newItems,
+    int totalItems,
+  ) {
+    db.execute(
+      '''
+      insert into subscription_checks
+      (source, target, checked_at, status, message, new_items_json, total_items)
+      values (?, ?, ?, 'updated', null, ?, ?)
+      ''',
+      [source, target, checkedAt, jsonEncode(newItems), totalItems],
+    );
+  }
+
+  void _recordFailedCheck(
+    String source,
+    String target,
+    int checkedAt,
+    String message,
+  ) {
+    db.execute(
+      '''
+      insert into subscription_checks
+      (source, target, checked_at, status, message, new_items_json, total_items)
+      values (?, ?, ?, 'failed', ?, '[]', null)
+      ''',
+      [source, target, checkedAt, message],
+    );
+    db.execute(
+      'update subscriptions set last_check_at = ?, last_error = ?, updated_at = ? where source = ? and target = ?',
+      [checkedAt, message, checkedAt, source, target],
+    );
+  }
+
+  void _enqueueDownload({
+    required String source,
+    required String target,
+    required String title,
+    required String subtitle,
+    required String cover,
+    required List<_SubscriptionItem> items,
+    required List<String> newItems,
+  }) {
+    String? taskId;
+    try {
+      taskId = taskRunner.createDownloadTask({
+        'source': source,
+        'target': target,
+        'title': title,
+        'coverUrl': cover,
+        'eps': List<int>.generate(items.length, (i) => i),
+        'subscription': true,
+      });
+    } catch (_) {
+      // 已有活跃任务或已下载：静默跳过，下次检查继续收敛。
+      return;
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      insert into subscription_downloads
+      (source, target, task_id, title, subtitle, cover, new_items_json,
+       status, message, created_at, updated_at)
+      values (?, ?, ?, ?, ?, ?, ?, 'queued', null, ?, ?)
+      ''',
+      [
+        source,
+        target,
+        taskId,
+        title,
+        subtitle,
+        cover,
+        jsonEncode(newItems),
+        now,
+        now,
+      ],
+    );
+  }
+}
+
+/// 订阅内容清单条目（分集源为章节；非分集源为恒定整本项）。
+class _SubscriptionItem {
+  final String name;
+
+  /// 源站提供的更新时间（毫秒）；源不提供时为 null。
+  final int? timeMs;
+
+  const _SubscriptionItem(this.name, [this.timeMs]);
+}
+
+/// 解析源站时间（毫秒数或 ISO 字符串），无法解析返回 null。
+int? _parseSiteTime(Object? raw) {
+  if (raw == null) return null;
+  if (raw is int) return raw;
+  final s = raw.toString().trim();
+  if (s.isEmpty) return null;
+  final n = int.tryParse(s);
+  if (n != null) return n;
+  return DateTime.tryParse(s)?.millisecondsSinceEpoch;
+}
+
+String _encodeSubscriptionItems(List<_SubscriptionItem> items) {
+  return jsonEncode(items
+      .map((e) => {
+            'n': e.name,
+            if (e.timeMs != null) 't': e.timeMs,
+          })
+      .toList());
+}
+
+/// 解析内容清单（兼容旧的纯字符串列表格式）。
+List<_SubscriptionItem> _decodeSubscriptionItems(Object? raw) {
+  final decoded = _tryDecodeJson(raw);
+  if (decoded is! List) return const [];
+  final result = <_SubscriptionItem>[];
+  for (final e in decoded) {
+    if (e is String) {
+      result.add(_SubscriptionItem(e));
+    } else if (e is Map) {
+      result.add(_SubscriptionItem(
+        (e['n'] ?? '').toString(),
+        _parseSiteTime(e['t']),
+      ));
+    }
+  }
+  return result;
+}
+
 String _canonicalComicId({required String source, required String target}) {
   final s = source.trim();
   final t = target.trim();
@@ -1719,6 +2104,332 @@ int _countDownloadedProgress(Directory comicDir) {
     // ignore
   }
   return count;
+}
+
+/// 抓取订阅对象的源站内容清单（分集源为章节名+源站时间；非分集源为恒定整本项）。
+Future<List<_SubscriptionItem>> _fetchSubscriptionItems({
+  required String source,
+  required String target,
+  required Map<String, dynamic>? auth,
+}) {
+  switch (source) {
+    case 'picacg':
+      return _fetchPicacgItems(auth: auth, target: target);
+    case 'jm':
+      return _fetchJmItems(auth: auth, target: target);
+    default:
+      // 非分集源：整本视为单一内容，天然没有"新集"。
+      return Future.value(const [_SubscriptionItem('full')]);
+  }
+}
+
+/// picacg 章节清单（仅抓取章节列表，不下载内容）。
+Future<List<_SubscriptionItem>> _fetchPicacgItems({
+  required Map<String, dynamic>? auth,
+  required String target,
+}) async {
+  final token = (auth?['token'] ?? auth?['authorization'] ?? '').toString();
+  if (token.trim().isEmpty) throw StateError('missing auth.token');
+
+  final id = target.trim();
+  if (id.isEmpty) throw StateError('invalid target');
+
+  const apiUrl = 'https://picaapi.picacomic.com';
+  const apiKey = 'C69BAF41DA5ABD1FFEDC6D2FEA56B';
+  const secret =
+      r'~d}$Q7$eIni=V)9\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n|0/*Cn';
+
+  String createSignature(
+      String path, String nonce, String time, String method) {
+    final key = (path + time + nonce + method + apiKey).toLowerCase();
+    final hmacSha256 = Hmac(sha256, utf8.encode(secret));
+    return hmacSha256.convert(utf8.encode(key)).toString();
+  }
+
+  Map<String, String> headersFor(String method, String pathWithQuery) {
+    final nonce = _randomHex(16);
+    final time = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+    final signature = createSignature(pathWithQuery, nonce, time, method);
+    final appChannel = (auth?['appChannel'] ?? '3').toString().trim();
+    final imageQuality =
+        (auth?['imageQuality'] ?? 'original').toString().trim();
+    final appUuid = (auth?['appUuid'] ?? 'defaultUuid').toString().trim();
+
+    return {
+      'api-key': apiKey,
+      'accept': 'application/vnd.picacomic.com.v1+json',
+      'app-channel': appChannel.isEmpty ? '3' : appChannel,
+      'authorization': token,
+      'time': time,
+      'nonce': nonce,
+      'app-version': '2.2.1.3.3.4',
+      'app-uuid': appUuid.isEmpty ? 'defaultUuid' : appUuid,
+      'image-quality': imageQuality.isEmpty ? 'original' : imageQuality,
+      'app-platform': 'android',
+      'app-build-version': '45',
+      'content-type': 'application/json; charset=UTF-8',
+      'user-agent': 'okhttp/3.8.1',
+      'version': 'v1.4.1',
+      'host': 'picaapi.picacomic.com',
+      'signature': signature,
+    };
+  }
+
+  final httpClient = _newHttpClient();
+  try {
+    Future<Map<String, dynamic>> getJson(String pathWithQuery) async {
+      final uri = Uri.parse('$apiUrl/$pathWithQuery');
+      Object? lastErr;
+      for (var i = 0; i < 3; i++) {
+        try {
+          final res = await _httpGetBytes(
+            uri,
+            headers: headersFor('GET', pathWithQuery),
+            timeout: const Duration(seconds: 20),
+            maxBytes: 10 * 1024 * 1024,
+            client: httpClient,
+          );
+          final body = res.bodyText();
+          Object? decoded;
+          try {
+            decoded = jsonDecode(body);
+          } catch (e) {
+            final head = _snippet(body);
+            throw StateError(
+              head.isEmpty
+                  ? 'picacg api returned non-json (${res.statusCode}) @ ${res.uri}: $e'
+                  : 'picacg api returned non-json (${res.statusCode}) @ ${res.uri}: $head',
+            );
+          }
+          if (decoded is! Map) throw StateError('invalid json');
+          final map = Map<String, dynamic>.from(decoded);
+          if (res.statusCode == 200) return map;
+          final msg =
+              (map['message'] ?? map['error'] ?? 'request failed').toString();
+          throw StateError('picacg request failed: ${res.statusCode} $msg');
+        } catch (e) {
+          lastErr = e;
+          await Future.delayed(Duration(milliseconds: 300 * (1 << i)));
+        }
+      }
+      throw lastErr ?? Exception('request failed');
+    }
+
+    final items = <_SubscriptionItem>[];
+    var page = 1;
+    while (true) {
+      final res = await getJson('comics/$id/eps?page=$page');
+      final data = res['data'];
+      if (data is! Map) break;
+      final epsObj = data['eps'];
+      if (epsObj is! Map) break;
+      final docs = epsObj['docs'];
+      if (docs is List) {
+        for (final d in docs) {
+          if (d is Map) {
+            items.add(_SubscriptionItem(
+              (d['title'] ?? '').toString(),
+              _parseSiteTime(d['updated_at']),
+            ));
+          }
+        }
+      }
+      final pages = int.tryParse((epsObj['pages'] ?? '').toString()) ?? page;
+      if (pages <= page) break;
+      page++;
+    }
+    if (items.isEmpty) throw StateError('empty eps list');
+    return items.reversed.toList();
+  } finally {
+    httpClient.close(force: true);
+  }
+}
+
+/// jm 章节清单（仅抓取 album 章节列表，不下载内容）。
+Future<List<_SubscriptionItem>> _fetchJmItems({
+  required Map<String, dynamic>? auth,
+  required String target,
+}) async {
+  final apiBaseUrl = (auth?['apiBaseUrl'] ?? '').toString().trim();
+  final appVersion = (auth?['appVersion'] ?? '').toString().trim();
+  if (apiBaseUrl.isEmpty) throw StateError('missing auth.apiBaseUrl');
+  if (appVersion.isEmpty) throw StateError('missing auth.appVersion');
+
+  final m = RegExp(r'\d+').firstMatch(target);
+  final rawId = (m?.group(0) ?? target).trim();
+  if (rawId.isEmpty) throw StateError('invalid target');
+
+  const jmAuthKey = '18comicAPPContent';
+  const jmSecret = '185Hcomic3PAPP7R';
+  const ua =
+      'Mozilla/5.0 (Linux; Android 10; K; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/138.0.0.0 Mobile Safari/537.36';
+
+  final httpClient = _newHttpClient();
+  try {
+    Map<String, String> baseHeaders(int time) {
+      final token = md5.convert(utf8.encode('$time$jmAuthKey')).toString();
+      return {
+        'accept': '*/*',
+        'accept-encoding': 'gzip',
+        'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+        'connection': 'keep-alive',
+        'origin': 'https://localhost',
+        'referer': 'https://localhost/',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'cross-site',
+        'x-requested-with': 'com.example.app',
+        'authorization': 'Bearer',
+        'sec-fetch-storage-access': 'active',
+        'token': token,
+        'tokenparam': '$time,$appVersion',
+        'user-agent': ua,
+      };
+    }
+
+    String convertData(String input, String secret) {
+      final key = md5.convert(utf8.encode(secret)).toString();
+      final data = base64Decode(input);
+      if (data.isEmpty) return '';
+      String stripTail(String s) {
+        var i = s.length - 1;
+        for (; i >= 0; i--) {
+          final ch = s[i];
+          if (ch == '}' || ch == ']') break;
+        }
+        return s.substring(0, i + 1);
+      }
+
+      if (data.length % 16 != 0) {
+        return stripTail(utf8.decode(data, allowMalformed: true));
+      }
+      final cipher = ECBBlockCipher(AESEngine())
+        ..init(false, KeyParameter(utf8.encode(key)));
+      var offset = 0;
+      final out = Uint8List(data.length);
+      try {
+        while (offset < data.length) {
+          offset += cipher.processBlock(data, offset, out, offset);
+        }
+        return stripTail(utf8.decode(out, allowMalformed: true));
+      } on RangeError {
+        return stripTail(utf8.decode(data, allowMalformed: true));
+      }
+    }
+
+    Future<Map<String, dynamic>> jmGet(String pathQuery) async {
+      final uri = pathQuery.startsWith('http')
+          ? Uri.parse(pathQuery)
+          : Uri.parse('$apiBaseUrl$pathQuery');
+
+      Object? lastErr;
+      const retries = 2;
+      for (var attempt = 0; attempt <= retries; attempt++) {
+        final time = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        try {
+          final res = await _httpGetBytes(
+            uri,
+            headers: baseHeaders(time),
+            timeout: const Duration(seconds: 20),
+            maxBytes: 12 * 1024 * 1024,
+            client: httpClient,
+          );
+          if (res.statusCode == 401) {
+            throw StateError('unauthorized @ ${res.uri}');
+          }
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            final err =
+                HttpException('bad status: ${res.statusCode}', uri: uri);
+            if (!_isRetryableStatus(res.statusCode) || attempt == retries) {
+              throw _NoRetry(err);
+            }
+            await Future.delayed(Duration(milliseconds: 300 * (1 << attempt)));
+            continue;
+          }
+          final outerBody = res.bodyText();
+          Object? outerAny;
+          try {
+            outerAny = jsonDecode(outerBody);
+          } catch (e) {
+            final head = _snippet(outerBody);
+            throw StateError(
+              head.isEmpty
+                  ? 'jm api returned non-json (${res.statusCode}) @ ${res.uri}: $e'
+                  : 'jm api returned non-json (${res.statusCode}) @ ${res.uri}: $head',
+            );
+          }
+          if (outerAny is! Map) throw StateError('invalid response');
+          final outer = Map<String, dynamic>.from(outerAny);
+
+          final dataField = outer['data'];
+          if (dataField is List && dataField.isEmpty) {
+            throw StateError('empty data');
+          }
+          if (dataField is! String) {
+            throw StateError('missing data');
+          }
+          final decoded = convertData(dataField, '$time$jmSecret');
+          Object? innerAny;
+          try {
+            innerAny = jsonDecode(decoded);
+          } catch (_) {
+            final head = _snippet(decoded);
+            throw StateError(
+                head.isEmpty ? 'invalid data' : 'invalid data: $head');
+          }
+          if (innerAny is! Map) throw StateError('invalid data');
+          return Map<String, dynamic>.from(innerAny);
+        } catch (e) {
+          if (e is _NoRetry) throw e.error;
+          lastErr = e;
+          if (attempt == retries) break;
+          await Future.delayed(Duration(milliseconds: 300 * (1 << attempt)));
+        }
+      }
+      throw lastErr ?? Exception('request failed');
+    }
+
+    final album = await jmGet('/album?id=$rawId');
+    final epIds = <String>[];
+    final names = <_SubscriptionItem>[];
+    final seriesRaw = album['series'];
+    if (seriesRaw is List) {
+      var sort = 1;
+      for (final s in seriesRaw) {
+        if (s is! Map) continue;
+        var name = (s['name'] ?? '').toString();
+        if (name.trim().isEmpty) {
+          final sortName = (s['sort'] ?? sort).toString();
+          name = '第${sortName}話';
+        }
+        epIds.add((s['id'] ?? '').toString().trim());
+        names.add(_SubscriptionItem(name));
+        sort++;
+      }
+    }
+    if (names.isEmpty) names.add(const _SubscriptionItem('第1章'));
+
+    // jm 系列接口不提供每话时间；最近几话逐话查询（每话独立页面带 addtime）。
+    const recentCount = 5;
+    final start = names.length > recentCount ? names.length - recentCount : 0;
+    for (var i = start; i < epIds.length && i < names.length; i++) {
+      final epId = epIds[i];
+      if (epId.isEmpty) continue;
+      try {
+        final ep = await jmGet('/album?id=$epId');
+        final seconds = int.tryParse('${ep['addtime']}');
+        if (seconds != null && seconds > 0) {
+          names[i] = _SubscriptionItem(names[i].name, seconds * 1000);
+        }
+      } catch (_) {
+        // 单话时间获取失败不影响检查。
+      }
+      await Future.delayed(const Duration(milliseconds: 120));
+    }
+    return names;
+  } finally {
+    httpClient.close(force: true);
+  }
 }
 
 Future<_DownloadedComicData> _downloadPicacg(
@@ -3739,6 +4450,39 @@ Handler buildHandler({
     );
   }
 
+  const subscriptionDefaultIntervalKey =
+      'subscription_default_interval_minutes';
+  const subscriptionDefaultIntervalMinutes = 4320;
+
+  int readSubscriptionDefaultInterval() {
+    final row = db.select(
+      'select value from server_settings where key = ?',
+      [subscriptionDefaultIntervalKey],
+    ).firstOrNull;
+    final v = int.tryParse((row?['value'] ?? '').toString()) ?? 0;
+    if (v <= 0) return subscriptionDefaultIntervalMinutes;
+    return v.clamp(1, 60 * 24 * 365);
+  }
+
+  void writeSubscriptionDefaultInterval(int minutes) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      insert into server_settings (key, value, updated_at)
+      values (?, ?, ?)
+      on conflict(key) do update set value = excluded.value, updated_at = excluded.updated_at
+      ''',
+      [subscriptionDefaultIntervalKey, minutes.toString(), now],
+    );
+  }
+
+  final subscriptionScheduler = _SubscriptionScheduler(
+    db: db,
+    taskRunner: taskRunner,
+    readDefaultInterval: readSubscriptionDefaultInterval,
+  );
+  subscriptionScheduler.start();
+
   bool hasAnyPageFile(Directory pagesDir) {
     if (!pagesDir.existsSync()) return false;
     bool isPageFile(String name) {
@@ -5444,6 +6188,352 @@ Handler buildHandler({
     return _json(200, {'ok': true});
   });
 
+  api.get('/v1/subscriptions', (Request req) {
+    final rows = db.select(
+      '''
+      select s.source, s.target, s.title, s.subtitle, s.cover, s.tags,
+             s.level, s.interval_minutes, s.enabled, s.last_check_at,
+             s.next_check_at, s.last_error, s.created_at, s.updated_at,
+             (select max(c.checked_at) from subscription_checks c
+               where c.source = s.source and c.target = s.target
+                 and c.status = 'updated') as last_updated_at
+      from subscriptions s
+      order by s.created_at desc
+      ''',
+    );
+    final defaultInterval = readSubscriptionDefaultInterval();
+    final list = rows.map((r) {
+      final interval = int.tryParse((r['interval_minutes'] ?? '').toString());
+      final effective =
+          (interval != null && interval > 0) ? interval : defaultInterval;
+      return {
+        'source': r['source'],
+        'target': r['target'],
+        'title': r['title'],
+        'subtitle': r['subtitle'],
+        'cover': r['cover'],
+        'tags': _tryDecodeJson(r['tags']) ?? [],
+        'level': r['level'],
+        'intervalMinutes': interval,
+        'effectiveIntervalMinutes': effective,
+        'enabled': (r['enabled'] as int? ?? 1) == 1,
+        'lastCheckAt': r['last_check_at'],
+        'nextCheckAt': r['next_check_at'],
+        'lastError': r['last_error'],
+        'lastUpdatedAt': r['last_updated_at'],
+        'createdAt': r['created_at'],
+        'updatedAt': r['updated_at'],
+      };
+    }).toList();
+    return _json(200, {
+      'ok': true,
+      'defaultIntervalMinutes': defaultInterval,
+      'subscriptions': list,
+    });
+  });
+
+  api.get('/v1/subscriptions/contains', (Request req) {
+    final source = (req.url.queryParameters['source'] ?? '').toString().trim();
+    final target = (req.url.queryParameters['target'] ?? '').toString().trim();
+    if (source.isEmpty || target.isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing source or target'});
+    }
+    final row = db.select(
+      '''
+      select source, target, title, subtitle, cover, tags, level,
+             interval_minutes, enabled, last_check_at, next_check_at,
+             last_error, created_at, updated_at
+      from subscriptions
+      where source = ? and target = ?
+      ''',
+      [source, target],
+    ).firstOrNull;
+    if (row == null) {
+      return _json(200, {'ok': true, 'exists': false, 'subscription': null});
+    }
+    final defaultInterval = readSubscriptionDefaultInterval();
+    final interval = int.tryParse((row['interval_minutes'] ?? '').toString());
+    final effective =
+        (interval != null && interval > 0) ? interval : defaultInterval;
+    return _json(200, {
+      'ok': true,
+      'exists': true,
+      'subscription': {
+        'source': row['source'],
+        'target': row['target'],
+        'title': row['title'],
+        'subtitle': row['subtitle'],
+        'cover': row['cover'],
+        'tags': _tryDecodeJson(row['tags']) ?? [],
+        'level': row['level'],
+        'intervalMinutes': interval,
+        'effectiveIntervalMinutes': effective,
+        'enabled': (row['enabled'] as int? ?? 1) == 1,
+        'lastCheckAt': row['last_check_at'],
+        'nextCheckAt': row['next_check_at'],
+        'lastError': row['last_error'],
+        'lastUpdatedAt': null,
+        'createdAt': row['created_at'],
+        'updatedAt': row['updated_at'],
+      },
+    });
+  });
+
+  api.post('/v1/subscriptions', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+
+    final source = (json['source'] ?? '').toString().trim();
+    final target = (json['target'] ?? '').toString().trim();
+    if (source.isEmpty || target.isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing source or target'});
+    }
+    final level = (json['level'] ?? 'download').toString().trim();
+    if (level != 'update' && level != 'download') {
+      return _json(400, {'ok': false, 'error': 'invalid level'});
+    }
+    final intervalRaw = json['intervalMinutes'];
+    int? intervalMinutes;
+    if (intervalRaw != null) {
+      final v = int.tryParse(intervalRaw.toString());
+      if (v == null || v <= 0) {
+        return _json(400, {'ok': false, 'error': 'invalid intervalMinutes'});
+      }
+      intervalMinutes = v.clamp(1, 60 * 24 * 365);
+    }
+
+    final exists = db.select(
+      'select source from subscriptions where source = ? and target = ?',
+      [source, target],
+    ).firstOrNull;
+    if (exists != null) {
+      return _json(409, {'ok': false, 'error': 'already subscribed'});
+    }
+
+    final title = (json['title'] ?? '').toString();
+    final subtitle = (json['subtitle'] ?? '').toString();
+    final cover = (json['cover'] ?? '').toString();
+    final tags = jsonEncode(json['tags'] ?? []);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+      '''
+      insert into subscriptions
+      (source, target, title, subtitle, cover, tags, level, interval_minutes,
+       enabled, baseline_json, last_check_at, next_check_at, last_error,
+       created_at, updated_at)
+      values (?, ?, ?, ?, ?, ?, ?, ?, 1, '[]', null, ?, null, ?, ?)
+      ''',
+      [
+        source,
+        target,
+        title,
+        subtitle,
+        cover,
+        tags,
+        level,
+        intervalMinutes,
+        now,
+        now,
+        now,
+      ],
+    );
+    return _json(200, {'ok': true});
+  });
+
+  api.patch('/v1/subscriptions', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+    final source = (json['source'] ?? '').toString().trim();
+    final target = (json['target'] ?? '').toString().trim();
+    if (source.isEmpty || target.isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing source or target'});
+    }
+    final row = db.select(
+      'select source from subscriptions where source = ? and target = ?',
+      [source, target],
+    ).firstOrNull;
+    if (row == null) return _json(404, {'ok': false, 'error': 'not found'});
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (json.containsKey('level')) {
+      final level = (json['level'] ?? '').toString().trim();
+      if (level != 'update' && level != 'download') {
+        return _json(400, {'ok': false, 'error': 'invalid level'});
+      }
+      db.execute(
+        'update subscriptions set level = ?, updated_at = ? where source = ? and target = ?',
+        [level, now, source, target],
+      );
+    }
+    if (json.containsKey('intervalMinutes')) {
+      final raw = json['intervalMinutes'];
+      if (raw == null) {
+        db.execute(
+          'update subscriptions set interval_minutes = null, updated_at = ? where source = ? and target = ?',
+          [now, source, target],
+        );
+      } else {
+        final v = int.tryParse(raw.toString());
+        if (v == null || v <= 0) {
+          return _json(400, {'ok': false, 'error': 'invalid intervalMinutes'});
+        }
+        db.execute(
+          'update subscriptions set interval_minutes = ?, updated_at = ? where source = ? and target = ?',
+          [v.clamp(1, 60 * 24 * 365), now, source, target],
+        );
+      }
+    }
+    if (json.containsKey('enabled')) {
+      final enabled = json['enabled'] == true ? 1 : 0;
+      db.execute(
+        'update subscriptions set enabled = ?, updated_at = ? where source = ? and target = ?',
+        [enabled, now, source, target],
+      );
+    }
+    return _json(200, {'ok': true});
+  });
+
+  api.delete('/v1/subscriptions', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+    final source = (json['source'] ?? '').toString().trim();
+    final target = (json['target'] ?? '').toString().trim();
+    if (source.isEmpty || target.isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing source or target'});
+    }
+    db.execute(
+      'delete from subscriptions where source = ? and target = ?',
+      [source, target],
+    );
+    return _json(200, {'ok': true});
+  });
+
+  api.post('/v1/subscriptions/check', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+    final source = (json['source'] ?? '').toString().trim();
+    final target = (json['target'] ?? '').toString().trim();
+    if (source.isEmpty || target.isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing source or target'});
+    }
+    final exists = db.select(
+      'select source from subscriptions where source = ? and target = ?',
+      [source, target],
+    ).firstOrNull;
+    if (exists == null) {
+      return _json(404, {'ok': false, 'error': 'not found'});
+    }
+    final result = await subscriptionScheduler.checkNow(source, target);
+    if (result == null) {
+      return _json(200, {
+        'ok': true,
+        'result': {'status': 'busy'},
+      });
+    }
+    return _json(200, {'ok': true, 'result': result.toJson()});
+  });
+
+  api.get('/v1/subscriptions/history', (Request req) {
+    final source = (req.url.queryParameters['source'] ?? '').toString().trim();
+    final target = (req.url.queryParameters['target'] ?? '').toString().trim();
+    if (source.isEmpty || target.isEmpty) {
+      return _json(400, {'ok': false, 'error': 'missing source or target'});
+    }
+    final limit =
+        (int.tryParse(req.url.queryParameters['limit'] ?? '') ?? 100)
+            .clamp(1, 500);
+    final rows = db.select(
+      '''
+      select checked_at, status, message, new_items_json, total_items
+      from subscription_checks
+      where source = ? and target = ?
+      order by checked_at desc
+      limit ?
+      ''',
+      [source, target, limit],
+    );
+    final checks = rows
+        .map((r) => {
+              'checkedAt': r['checked_at'],
+              'status': r['status'],
+              'message': r['message'],
+              'newItems': _tryDecodeJson(r['new_items_json']) ?? [],
+              'totalItems': r['total_items'],
+            })
+        .toList();
+    return _json(200, {'ok': true, 'checks': checks});
+  });
+
+  api.get('/v1/subscriptions/downloads', (Request req) {
+    final limit =
+        (int.tryParse(req.url.queryParameters['limit'] ?? '') ?? 100)
+            .clamp(1, 500);
+    final rows = db.select(
+      '''
+      select d.id, d.source, d.target, d.task_id, d.new_items_json, d.status,
+             d.message, d.created_at, d.updated_at,
+             d.title, d.subtitle, d.cover,
+             t.status as task_status, t.progress as task_progress,
+             t.total as task_total, t.message as task_message
+      from subscription_downloads d
+      left join tasks t on t.id = d.task_id
+      order by d.created_at desc
+      limit ?
+      ''',
+      [limit],
+    );
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final downloads = rows.map((r) {
+      final taskStatus = r['task_status'] as String?;
+      final status = taskStatus ?? (r['status'] ?? '').toString();
+      final message = taskStatus != null ? r['task_message'] : r['message'];
+      if (taskStatus != null && taskStatus != r['status']) {
+        db.execute(
+          'update subscription_downloads set status = ?, message = ?, updated_at = ? where id = ?',
+          [taskStatus, r['task_message'], now, r['id']],
+        );
+      }
+      return {
+        'id': r['id'],
+        'source': r['source'],
+        'target': r['target'],
+        'taskId': r['task_id'],
+        'title': r['title'],
+        'subtitle': r['subtitle'],
+        'cover': r['cover'],
+        'newItems': _tryDecodeJson(r['new_items_json']) ?? [],
+        'status': status,
+        'message': message,
+        'progress': taskStatus != null ? r['task_progress'] : null,
+        'total': taskStatus != null ? r['task_total'] : null,
+        'createdAt': r['created_at'],
+        'updatedAt': r['updated_at'],
+      };
+    }).toList();
+    return _json(200, {'ok': true, 'downloads': downloads});
+  });
+
+  api.get('/v1/subscriptions/config', (Request req) {
+    return _json(200, {
+      'ok': true,
+      'defaultIntervalMinutes': readSubscriptionDefaultInterval(),
+    });
+  });
+
+  api.put('/v1/subscriptions/config', (Request req) async {
+    final json = await readJsonMap(req);
+    if (json == null) return _json(400, {'ok': false, 'error': 'invalid json'});
+    final raw = json['defaultIntervalMinutes'];
+    final v = int.tryParse((raw ?? '').toString());
+    if (v == null || v <= 0) {
+      return _json(
+          400, {'ok': false, 'error': 'invalid defaultIntervalMinutes'});
+    }
+    final minutes = v.clamp(1, 60 * 24 * 365);
+    writeSubscriptionDefaultInterval(minutes);
+    return _json(200, {'ok': true, 'defaultIntervalMinutes': minutes});
+  });
+
   api.post('/v1/comics', (Request req) async {
     final parts = await _readMultipart(req);
     final metaPart = parts.fields['meta'];
@@ -5729,6 +6819,65 @@ void _initDb(Database db) {
       folder text not null,
       order_value int not null,
       added_at int not null,
+      updated_at int not null
+    );
+  ''');
+
+  db.execute('''
+    create table if not exists subscriptions (
+      source text not null,
+      target text not null,
+      title text not null,
+      subtitle text not null,
+      cover text not null,
+      tags text not null,
+      level text not null,
+      interval_minutes int,
+      enabled int not null default 1,
+      baseline_json text not null,
+      last_check_at int,
+      next_check_at int not null,
+      last_error text,
+      created_at int not null,
+      updated_at int not null,
+      primary key (source, target)
+    );
+  ''');
+
+  db.execute('''
+    create table if not exists subscription_checks (
+      id integer primary key autoincrement,
+      source text not null,
+      target text not null,
+      checked_at int not null,
+      status text not null,
+      message text,
+      new_items_json text not null,
+      total_items int
+    );
+  ''');
+
+  db.execute('''
+    create table if not exists subscription_downloads (
+      id integer primary key autoincrement,
+      source text not null,
+      target text not null,
+      task_id text,
+      title text not null,
+      subtitle text not null,
+      cover text not null,
+      new_items_json text not null,
+      status text not null,
+      message text,
+      created_at int not null,
+      updated_at int not null
+    );
+  ''');
+
+  db.execute('''
+    create table if not exists server_settings (
+      key text primary key,
+      value text not null,
       updated_at int not null
     );
   ''');

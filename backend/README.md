@@ -103,6 +103,16 @@ dart run bin/server.dart
   - `DELETE /api/v1/resource-favorites`（body：`{id}`）
   - `PATCH /api/v1/resource-favorites/move`
   - `PATCH /api/v1/resource-favorites/order`
+- 漫画订阅与自动追更（面向未入库漫画；服务器按频率检查更新，按级别记录/自动下载）
+  - `GET /api/v1/subscriptions`：订阅列表（含有效频率、上次/下次检查时间）
+  - `GET /api/v1/subscriptions/contains?source={k}&target={id}`
+  - `POST /api/v1/subscriptions`（body：`{source, target, title, subtitle, cover, tags, level: update|download, intervalMinutes?}`；已入库返回 409）
+  - `PATCH /api/v1/subscriptions`（body：`{source, target, level?, intervalMinutes?, enabled?}`）
+  - `DELETE /api/v1/subscriptions`（body：`{source, target}`；历史保留）
+  - `POST /api/v1/subscriptions/check`（body：`{source, target}`；同步执行检查并返回结果：`status`/`newItems`/`totalItems`/`latestItem`/`recentItems`（最近几话与源站更新时间）/`firstCheck`/`message`）
+  - `GET /api/v1/subscriptions/history?source={k}&target={id}`：更新历史（发现更新/失败）
+  - `GET /api/v1/subscriptions/downloads?limit=`：订阅自动下载历史（实时关联任务状态）
+  - `GET /api/v1/subscriptions/config` / `PUT /api/v1/subscriptions/config`：全局默认检查频率（分钟）
 
 ## auth/{source} 约定（KISS）
 
