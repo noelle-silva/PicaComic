@@ -15,6 +15,7 @@ import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/pages/comic_page.dart';
 import 'package:pica_comic/pages/favorites/server_favorite_dialogs.dart';
 import 'package:pica_comic/pages/open_source_comic.dart';
+import 'package:pica_comic/pages/server_tag_search_page.dart';
 import 'package:pica_comic/pages/reader/comic_reading_page.dart';
 import 'package:pica_comic/tools/io_tools.dart';
 import 'package:pica_comic/tools/time.dart';
@@ -95,6 +96,28 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
     } catch (e) {
       showToast(message: e.toString());
     }
+  }
+
+  @override
+  Widget? buildTagAction(ComicPageLogic logic, BuildContext context) {
+    if (logic.selectedTags.isEmpty) return null;
+    return Padding(
+      padding: const EdgeInsets.all(4),
+      child: ActionChip(
+        avatar: const Icon(Icons.search, size: 16),
+        label: Text("搜索".tl),
+        visualDensity: VisualDensity.compact,
+        onPressed: () => _searchSelectedTags(logic),
+      ),
+    );
+  }
+
+  /// 用选中的全部标签组合（AND）打开服务器标签搜索结果页。
+  void _searchSelectedTags(ComicPageLogic logic) {
+    if (logic.selectedTags.isEmpty) return;
+    context.to(
+      () => ServerTagSearchPage(tags: logic.selectedTags.toList()),
+    );
   }
 
   @override
@@ -305,7 +328,14 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
   void openFavoritePanel() {}
 
   @override
-  void tapOnTag(String tag, String key) {}
+  void tapOnTag(String tag, String key) {
+    final logic = StateController.find<ComicPageLogic<ServerComicDetailData>>(
+        tag: this.tag);
+    if (!logic.selectedTags.remove(tag)) {
+      logic.selectedTags.add(tag);
+    }
+    logic.update();
+  }
 
   @override
   String get downloadedId => data!.comic.id;
