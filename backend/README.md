@@ -79,17 +79,30 @@ dart run bin/server.dart
 - `GET /api/v1/comics/{id}/pages?ep={ep}`：返回指定章节的页面文件名列表
 - `GET /api/v1/comics/{id}/image?ep={ep}&name={filename}`：返回单页图片
 - `DELETE /api/v1/comics/{id}`
-- `GET /api/v1/favorites/folders`
-- `POST /api/v1/favorites/folders`
-- `PATCH /api/v1/favorites/folders/rename`
-- `PATCH /api/v1/favorites/folders/order`
-- `DELETE /api/v1/favorites/folders/{name}?moveTo={folder}`
-- `GET /api/v1/favorites?folder={folder}`
-- `GET /api/v1/favorites/contains?sourceKey={k}&target={id}`
-- `POST /api/v1/favorites`
-- `DELETE /api/v1/favorites`
-- `PATCH /api/v1/favorites/move`
-- `PATCH /api/v1/favorites/order`
+- 源信息收藏（收藏各来源的漫画信息，与是否已下载无关）
+  - `GET /api/v1/favorites/folders`
+  - `POST /api/v1/favorites/folders`
+  - `PATCH /api/v1/favorites/folders/rename`
+  - `PATCH /api/v1/favorites/folders/order`
+  - `DELETE /api/v1/favorites/folders/{name}?moveTo={folder}`
+  - `GET /api/v1/favorites?folder={folder}`
+  - `GET /api/v1/favorites/contains?sourceKey={k}&target={id}`
+  - `POST /api/v1/favorites`
+  - `DELETE /api/v1/favorites`
+  - `PATCH /api/v1/favorites/move`
+  - `PATCH /api/v1/favorites/order`
+- 服务器资源收藏（仅能收藏已入库漫画；展示信息实时取自漫画库，删除漫画时同步清理）
+  - `GET /api/v1/resource-favorites/folders`
+  - `POST /api/v1/resource-favorites/folders`
+  - `PATCH /api/v1/resource-favorites/folders/rename`
+  - `PATCH /api/v1/resource-favorites/folders/order`
+  - `DELETE /api/v1/resource-favorites/folders/{name}?moveTo={folder}`
+  - `GET /api/v1/resource-favorites?folder={folder}`
+  - `GET /api/v1/resource-favorites/contains?id={comicId}`
+  - `POST /api/v1/resource-favorites`（body：`{id, folder}`；id 不在漫画库时返回 404）
+  - `DELETE /api/v1/resource-favorites`（body：`{id}`）
+  - `PATCH /api/v1/resource-favorites/move`
+  - `PATCH /api/v1/resource-favorites/order`
 
 ## auth/{source} 约定（KISS）
 
