@@ -12,6 +12,8 @@ import 'history_page.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'image_favorites.dart';
 import 'server_library_page.dart';
+import 'server_subscription_downloads_page.dart';
+import 'server_subscriptions_page.dart';
 import 'server_tasks_page.dart';
 import 'package:pica_comic/pages/settings/settings_page.dart';
 
@@ -48,6 +50,14 @@ class MePage extends StatelessWidget {
                               height: 12,
                             ),
                             buildServerTasks(context, width),
+                            const SizedBox(
+                              height: 12,
+                            ),
+                            buildServerSubscriptions(context, width),
+                            const SizedBox(
+                              height: 12,
+                            ),
+                            buildServerSubscriptionDownloads(context, width),
                             const SizedBox(
                               height: 12,
                             ),
@@ -91,6 +101,14 @@ class MePage extends StatelessWidget {
                     height: 12,
                   ),
                   buildServerTasks(context, width),
+                  const SizedBox(
+                    height: 12,
+                  ),
+                  buildServerSubscriptions(context, width),
+                  const SizedBox(
+                    height: 12,
+                  ),
+                  buildServerSubscriptionDownloads(context, width),
                   const SizedBox(
                     height: 12,
                   ),
@@ -242,6 +260,26 @@ class MePage extends StatelessWidget {
       title: "服务器任务".tl,
       description: "查看服务器下载任务状态/错误".tl,
       onTap: () => context.to(() => const ServerTasksPage()),
+    );
+  }
+
+  Widget buildServerSubscriptions(BuildContext context, double width) {
+    return _MePageCard(
+      icon: const Icon(Icons.notifications_active_outlined),
+      title: "服务器订阅".tl,
+      description: "管理漫画订阅与检查频率".tl,
+      onTap: () => context.to(() => const ServerSubscriptionsPage()),
+    );
+  }
+
+  Widget buildServerSubscriptionDownloads(
+      BuildContext context, double width) {
+    return _MePageCard(
+      icon: const Icon(Icons.cloud_download_outlined),
+      title: "订阅下载历史".tl,
+      description: "查看订阅自动下载的记录".tl,
+      onTap: () =>
+          context.to(() => const ServerSubscriptionDownloadsPage()),
     );
   }
 

@@ -18,6 +18,8 @@ class _ServerSettingsState extends State<ServerSettings> {
   bool _testing = false;
   bool _loadingConcurrent = false;
   int? _maxConcurrent;
+  bool _loadingInterval = false;
+  int? _defaultIntervalMinutes;
 
   @override
   void initState() {
@@ -35,6 +37,7 @@ class _ServerSettingsState extends State<ServerSettings> {
         TextEditingController(text: uploadMinutes.toString());
 
     _loadConcurrent();
+    _loadInterval();
   }
 
   @override
@@ -209,6 +212,110 @@ class _ServerSettingsState extends State<ServerSettings> {
     controller.dispose();
   }
 
+  /// 读取服务器端的订阅默认检查频率（服务器未配置时清空显示）。
+  Future<void> _loadInterval() async {
+    if (!PicaServer.instance.enabled) {
+      if (mounted) {
+        setState(() {
+          _defaultIntervalMinutes = null;
+          _loadingInterval = false;
+        });
+      }
+      return;
+    }
+    setState(() => _loadingInterval = true);
+    try {
+      final value =
+          await PicaServer.instance.getSubscriptionDefaultIntervalMinutes();
+      if (mounted) setState(() => _defaultIntervalMinutes = value);
+    } catch (_) {
+      if (mounted) setState(() => _defaultIntervalMinutes = null);
+    } finally {
+      if (mounted) setState(() => _loadingInterval = false);
+    }
+  }
+
+  Future<void> _editInterval() async {
+    if (!PicaServer.instance.enabled) {
+      showToast(message: "未配置服务器".tl);
+      return;
+    }
+    if (_defaultIntervalMinutes == null) {
+      await _loadInterval();
+      if (!mounted) return;
+    }
+    if (_defaultIntervalMinutes == null) {
+      showToast(message: "无法获取服务器配置".tl);
+      return;
+    }
+
+    const presets = <int>[360, 720, 1440, 2880, 4320, 10080];
+    final options = <int>[...presets];
+    if (!options.contains(_defaultIntervalMinutes)) {
+      options.insert(0, _defaultIntervalMinutes!);
+    }
+    var index = options.indexOf(_defaultIntervalMinutes!);
+
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(builder: (context, setState) {
+          return AlertDialog(
+            title: Text("订阅检查频率".tl),
+            content: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text("默认频率".tl),
+                const SizedBox(width: 16),
+                Select(
+                  outline: true,
+                  width: 180,
+                  values:
+                      options.map((e) => subscriptionIntervalLabel(e)).toList(),
+                  initialValue: index,
+                  onChange: (i) => setState(() => index = i),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: Text("取消".tl),
+              ),
+              FilledButton(
+                onPressed: () =>
+                    Navigator.of(dialogContext).pop(options[index]),
+                child: Text("确定".tl),
+              ),
+            ],
+          );
+        });
+      },
+    );
+    if (picked == null) return;
+    if (!mounted) return;
+
+    final dialog = showLoadingDialog(
+      context,
+      barrierDismissible: false,
+      allowCancel: false,
+      message: "设置中".tl,
+    );
+    try {
+      final newV = await PicaServer.instance
+          .setSubscriptionDefaultIntervalMinutes(picked);
+      dialog.close();
+      if (!mounted) return;
+      setState(() {
+        _defaultIntervalMinutes = newV;
+      });
+      showToast(message: "${"已设置".tl}: ${subscriptionIntervalLabel(newV)}");
+    } catch (e) {
+      dialog.close();
+      showToast(message: e.toString());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -292,6 +399,21 @@ class _ServerSettingsState extends State<ServerSettings> {
                 )
               : Text(_maxConcurrent?.toString() ?? "—"),
           onTap: _editConcurrency,
+        ),
+        ListTile(
+          leading: const Icon(Icons.schedule),
+          title: Text("订阅检查频率".tl),
+          subtitle: Text("漫画订阅的默认检查间隔".tl),
+          trailing: _loadingInterval
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Text(_defaultIntervalMinutes == null
+                  ? "—"
+                  : subscriptionIntervalLabel(_defaultIntervalMinutes)),
+          onTap: _editInterval,
         ),
         Padding(
             padding: EdgeInsets.only(
