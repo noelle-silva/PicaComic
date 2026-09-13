@@ -565,6 +565,122 @@ class PicaServer {
       'items': items.map((e) => e.toMap()).toList(),
     });
   }
+
+  Future<List<ServerResourceFavoriteFolder>>
+      listResourceFavoriteFolders() async {
+    final dio = _dio();
+    final res = await dio.get('/api/v1/resource-favorites/folders');
+    final data = res.data;
+    if (data is! Map) return const [];
+    final list = data['folders'];
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((e) =>
+            ServerResourceFavoriteFolder.fromMap(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  Future<void> createResourceFavoriteFolder(String name) async {
+    final dio = _dio();
+    await dio.post('/api/v1/resource-favorites/folders', data: {'name': name});
+  }
+
+  Future<void> renameResourceFavoriteFolder(String from, String to) async {
+    final dio = _dio();
+    await dio.patch('/api/v1/resource-favorites/folders/rename', data: {
+      'from': from,
+      'to': to,
+    });
+  }
+
+  Future<void> reorderResourceFavoriteFolders(List<String> names) async {
+    final dio = _dio();
+    await dio.patch('/api/v1/resource-favorites/folders/order',
+        data: {'names': names});
+  }
+
+  Future<void> deleteResourceFavoriteFolder(String name,
+      {required String moveTo}) async {
+    final dio = _dio();
+    await dio.delete(
+      '/api/v1/resource-favorites/folders/${Uri.encodeComponent(name)}',
+      queryParameters: {'moveTo': moveTo},
+    );
+  }
+
+  Future<List<ServerResourceFavoriteItem>> listResourceFavorites(
+      String folder) async {
+    final dio = _dio();
+    final res = await dio.get(
+      '/api/v1/resource-favorites',
+      queryParameters: {'folder': folder},
+    );
+    final data = res.data;
+    if (data is! Map) return const [];
+    final list = data['favorites'];
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((e) =>
+            ServerResourceFavoriteItem.fromMap(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  Future<ServerResourceFavoriteContains> containsResourceFavorite(
+      String id) async {
+    final dio = _dio();
+    final res = await dio.get(
+      '/api/v1/resource-favorites/contains',
+      queryParameters: {'id': id},
+    );
+    final data = res.data;
+    if (data is! Map) {
+      return const ServerResourceFavoriteContains(exists: false, folder: null);
+    }
+    return ServerResourceFavoriteContains(
+      exists: data['exists'] == true,
+      folder: data['folder']?.toString(),
+    );
+  }
+
+  Future<void> addResourceFavorite({
+    required String id,
+    required String folder,
+  }) async {
+    final dio = _dio();
+    await dio.post('/api/v1/resource-favorites', data: {
+      'id': id,
+      'folder': folder,
+    });
+  }
+
+  Future<void> removeResourceFavorite(String id) async {
+    final dio = _dio();
+    await dio.delete('/api/v1/resource-favorites', data: {'id': id});
+  }
+
+  Future<void> moveResourceFavorites({
+    required String folder,
+    required List<String> ids,
+  }) async {
+    final dio = _dio();
+    await dio.patch('/api/v1/resource-favorites/move', data: {
+      'folder': folder,
+      'items': ids.map((e) => {'id': e}).toList(),
+    });
+  }
+
+  Future<void> reorderResourceFavorites({
+    required String folder,
+    required List<String> ids,
+  }) async {
+    final dio = _dio();
+    await dio.patch('/api/v1/resource-favorites/order', data: {
+      'folder': folder,
+      'items': ids.map((e) => {'id': e}).toList(),
+    });
+  }
 }
 
 class ServerReadInfo {
@@ -752,6 +868,9 @@ class ComicServerStatus {
 
   final bool? favorite;
 
+  /// 是否已加入服务器资源收藏。
+  final bool? resourceFavorite;
+
   /// 服务器上的漫画 id（已存在时有值）。
   final String? comicId;
 
@@ -761,6 +880,7 @@ class ComicServerStatus {
   const ComicServerStatus({
     this.downloadState = ServerDownloadState.unknown,
     this.favorite,
+    this.resourceFavorite,
     this.comicId,
     this.downloadedEps = const [],
   });
@@ -770,12 +890,14 @@ class ComicServerStatus {
   ComicServerStatus copyWith({
     ServerDownloadState? downloadState,
     bool? favorite,
+    bool? resourceFavorite,
     String? comicId,
     List<int>? downloadedEps,
   }) {
     return ComicServerStatus(
       downloadState: downloadState ?? this.downloadState,
       favorite: favorite ?? this.favorite,
+      resourceFavorite: resourceFavorite ?? this.resourceFavorite,
       comicId: comicId ?? this.comicId,
       downloadedEps: downloadedEps ?? this.downloadedEps,
     );
@@ -836,6 +958,82 @@ class ServerFavoriteItem {
         'cover': cover,
         'tags': tags,
       };
+}
+
+/// 服务器资源收藏的文件夹。
+class ServerResourceFavoriteFolder {
+  final String name;
+  final int? orderValue;
+
+  const ServerResourceFavoriteFolder({required this.name, this.orderValue});
+
+  factory ServerResourceFavoriteFolder.fromMap(Map<String, dynamic> map) {
+    return ServerResourceFavoriteFolder(
+      name: (map['name'] ?? '').toString(),
+      orderValue: int.tryParse((map['orderValue'] ?? '').toString()),
+    );
+  }
+}
+
+/// 漫画在服务器资源收藏中的存在性信息。
+class ServerResourceFavoriteContains {
+  final bool exists;
+  final String? folder;
+
+  const ServerResourceFavoriteContains({required this.exists, this.folder});
+}
+
+/// 服务器资源收藏条目（展示信息实时来自服务器漫画库）。
+class ServerResourceFavoriteItem {
+  final String id;
+  final String folder;
+  final String title;
+  final String subtitle;
+  final int type;
+  final List<String> tags;
+  final String directory;
+  final int? time;
+  final int? size;
+  final String? coverUrl;
+  final int? orderValue;
+  final int? addedAt;
+  final int? updatedAt;
+
+  const ServerResourceFavoriteItem({
+    required this.id,
+    required this.folder,
+    required this.title,
+    required this.subtitle,
+    required this.type,
+    required this.tags,
+    required this.directory,
+    this.time,
+    this.size,
+    this.coverUrl,
+    this.orderValue,
+    this.addedAt,
+    this.updatedAt,
+  });
+
+  factory ServerResourceFavoriteItem.fromMap(Map<String, dynamic> map) {
+    return ServerResourceFavoriteItem(
+      id: (map['id'] ?? '').toString(),
+      folder: (map['folder'] ?? '').toString(),
+      title: (map['title'] ?? '').toString(),
+      subtitle: (map['subtitle'] ?? '').toString(),
+      type: int.tryParse((map['type'] ?? '').toString()) ?? -1,
+      tags: (map['tags'] is List)
+          ? List<String>.from((map['tags'] as List).map((e) => e.toString()))
+          : const [],
+      directory: (map['directory'] ?? '').toString(),
+      time: int.tryParse((map['time'] ?? '').toString()),
+      size: int.tryParse((map['size'] ?? '').toString()),
+      coverUrl: map['coverUrl']?.toString(),
+      orderValue: int.tryParse((map['orderValue'] ?? '').toString()),
+      addedAt: int.tryParse((map['addedAt'] ?? '').toString()),
+      updatedAt: int.tryParse((map['updatedAt'] ?? '').toString()),
+    );
+  }
 }
 
 class ServerTask {
