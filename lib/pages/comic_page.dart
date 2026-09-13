@@ -1593,7 +1593,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                   enableServerActions &&
                   serverSourceKey != null)
                 buildServerDownloadItem(logic),
-              if (width >= 500) buildItem("下载".tl, Icons.download, download),
+              buildItem("下载".tl, Icons.download, download),
               if (downloadManager.isExists(downloadedId))
                 buildItem("上传服务器".tl, Icons.cloud_upload, () async {
                   if (!PicaServer.instance.enabled) {
@@ -1679,24 +1679,10 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
           if (width < 500)
             SizedBox(
               height: 48,
-              child: Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.tonal(
-                      onPressed: download,
-                      child: Text("下载".tl),
-                    ),
-                  ),
-                  const SizedBox(
-                    width: 16,
-                  ),
-                  Expanded(
-                    child: FilledButton.tonal(
-                      onPressed: () => read(_logic.history),
-                      child: Text("阅读".tl),
-                    ),
-                  ),
-                ],
+              width: double.infinity,
+              child: FilledButton.tonal(
+                onPressed: () => read(_logic.history),
+                child: Text("阅读".tl),
               ),
             ).paddingHorizontal(8)
         ],
