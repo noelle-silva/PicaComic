@@ -14,8 +14,6 @@ import 'package:pica_comic/network/download_model.dart';
 import 'package:pica_comic/network/htmanga_network/ht_download_model.dart';
 import 'package:pica_comic/network/nhentai_network/download.dart';
 import 'package:pica_comic/network/nhentai_network/nhentai_main_network.dart';
-import 'package:pica_comic/pages/comic_page.dart';
-import 'package:pica_comic/pages/picacg/comic_page.dart';
 import 'package:pica_comic/pages/reader/comic_reading_page.dart';
 import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/io_tools.dart';
@@ -23,10 +21,7 @@ import 'package:pica_comic/foundation/ui_mode.dart';
 import 'package:pica_comic/tools/pdf.dart';
 import 'package:pica_comic/tools/tags_translation.dart';
 import 'package:pica_comic/pages/downloading_page.dart';
-import 'package:pica_comic/pages/ehentai/eh_gallery_page.dart';
-import 'package:pica_comic/pages/hitomi/hitomi_comic_page.dart';
-import 'package:pica_comic/pages/jm/jm_comic_page.dart';
-import 'package:pica_comic/pages/nhentai/comic_page.dart';
+import 'package:pica_comic/pages/open_source_comic.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/foundation/local_favorites.dart';
 import 'package:pica_comic/network/eh_network/eh_download_model.dart';
@@ -36,8 +31,6 @@ import 'package:pica_comic/network/picacg_network/picacg_download_model.dart';
 import 'dart:io';
 import 'package:pica_comic/tools/translations.dart';
 import 'package:pica_comic/components/components.dart';
-
-import 'htmanga/ht_comic_page.dart';
 
 extension ReadComic on DownloadedItem {
   void read({int? ep}) async {
@@ -568,7 +561,7 @@ class DownloadPage extends StatelessWidget {
     );
   }
 
-  void toComicInfoPage(DownloadedItem comic) => _toComicInfoPage(comic);
+  void toComicInfoPage(DownloadedItem comic) => openSourceComic(comic);
 
   void showInfo(int index, DownloadPageLogic logic, BuildContext context) {
     if (UiMode.m1(context)) {
@@ -1085,7 +1078,7 @@ class _DownloadedComicInfoViewState extends State<DownloadedComicInfoView> {
                     child: FilledButton(
                         onPressed: () {
                           App.globalBack();
-                          _toComicInfoPage(widget.item);
+                          openSourceComic(widget.item);
                         },
                         child: Text("查看详情".tl)),
                   ),
@@ -1199,23 +1192,4 @@ class DownloadedComicTile extends ComicTile {
       required this.type,
       required this.tag,
       super.key});
-}
-
-void _toComicInfoPage(DownloadedItem comic) {
-  var context = App.mainNavigatorKey!.currentContext!;
-  if (comic is DownloadedComic) {
-    context.to(() => PicacgComicPage((comic).comicItem.id, null));
-  } else if (comic is DownloadedGallery) {
-    context.to(() => EhGalleryPage((comic).gallery.toBrief()));
-  } else if (comic is DownloadedJmComic) {
-    context.to(() => JmComicPage((comic).comic.id));
-  } else if (comic is DownloadedHitomiComic) {
-    context.to(() => HitomiComicPage(comic.toBrief()));
-  } else if (comic is DownloadedHtComic) {
-    context.to(() => HtComicPage(comic.id.replaceFirst('Ht', '')));
-  } else if (comic is NhentaiDownloadedComic) {
-    context.to(() => NhentaiComicPage(comic.id.replaceFirst("nhentai", "")));
-  } else if (comic is CustomDownloadedItem) {
-    context.to(() => ComicPage(sourceKey: comic.sourceKey, id: comic.comicId));
-  }
 }
