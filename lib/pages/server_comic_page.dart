@@ -13,6 +13,7 @@ import 'package:pica_comic/network/download.dart';
 import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/pages/comic_page.dart';
+import 'package:pica_comic/pages/favorites/server_favorite_dialogs.dart';
 import 'package:pica_comic/pages/open_source_comic.dart';
 import 'package:pica_comic/pages/reader/comic_reading_page.dart';
 import 'package:pica_comic/tools/io_tools.dart';
@@ -51,6 +52,50 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
 
   @override
   bool get enableLocalFavorite => false;
+
+  /// 查询漫画是否已加入服务器资源收藏。
+  @override
+  Future<ComicServerStatus> loadServerStatus(
+      ServerComicDetailData data) async {
+    if (!PicaServer.instance.enabled) return ComicServerStatus.unknown;
+    try {
+      final contains =
+          await PicaServer.instance.containsResourceFavorite(data.comic.id);
+      return ComicServerStatus(resourceFavorite: contains.exists);
+    } catch (e) {
+      return ComicServerStatus.unknown;
+    }
+  }
+
+  @override
+  List<Widget> buildExtraActionItems(
+      ComicPageLogic<ServerComicDetailData> logic) {
+    if (!PicaServer.instance.enabled) return const [];
+    final favorite = logic.serverStatus.resourceFavorite == true;
+    return [
+      ComicActionItem(
+        title: favorite ? "已收藏".tl : "收藏到…".tl,
+        icon: favorite ? Icons.bookmark_added : Icons.bookmark_add_outlined,
+        onTap: () => _collectToResourceFavorite(logic),
+      ),
+    ];
+  }
+
+  Future<void> _collectToResourceFavorite(
+      ComicPageLogic<ServerComicDetailData> logic) async {
+    final folder = await pickServerResourceFavoriteFolder(context);
+    if (folder == null) return;
+    try {
+      await PicaServer.instance
+          .addResourceFavorite(id: comicId, folder: folder);
+      showToast(message: "已收藏".tl);
+      logic.applyServerStatus(
+        logic.serverStatus.copyWith(resourceFavorite: true),
+      );
+    } catch (e) {
+      showToast(message: e.toString());
+    }
+  }
 
   @override
   String? get title => data!.comic.title;
@@ -410,6 +455,9 @@ class ServerComicTile extends ComicTile {
   bool get enableLongPressed => false;
 
   @override
+  Widget? get trailing => _ServerComicMenuButton(comic: comic);
+
+  @override
   String get title => comic.title;
 
   @override
@@ -447,4 +495,92 @@ class ServerComicTile extends ComicTile {
 
   @override
   void onSecondaryTap_(TapDownDetails details) => onTap();
+}
+
+/// 服务器漫画卡片的"点点点"菜单按钮：收藏 / 取消收藏到服务器资源收藏。
+class _ServerComicMenuButton extends StatefulWidget {
+  const _ServerComicMenuButton({required this.comic});
+
+  final ServerComic comic;
+
+  @override
+  State<_ServerComicMenuButton> createState() =>
+      _ServerComicMenuButtonState();
+}
+
+class _ServerComicMenuButtonState extends State<_ServerComicMenuButton> {
+  Future<void> _showMenu() async {
+    ServerResourceFavoriteContains contains;
+    try {
+      contains = await PicaServer.instance
+          .containsResourceFavorite(widget.comic.id);
+    } catch (e) {
+      if (mounted) {
+        showToast(message: e.toString());
+      }
+      return;
+    }
+    if (!mounted) return;
+
+    final box = context.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (box == null || overlay == null) return;
+    final position = RelativeRect.fromRect(
+      Rect.fromPoints(
+        box.localToGlobal(Offset.zero, ancestor: overlay),
+        box.localToGlobal(box.size.bottomRight(Offset.zero), ancestor: overlay),
+      ),
+      Offset.zero & overlay.size,
+    );
+
+    final action = await showMenu<String>(
+      context: context,
+      position: position,
+      items: [
+        if (contains.exists)
+          PopupMenuItem(
+            value: 'remove',
+            child: Text("从服务器资源收藏删除".tl),
+          )
+        else
+          PopupMenuItem(
+            value: 'collect',
+            child: Text("收藏到服务器资源收藏…".tl),
+          ),
+      ],
+    );
+    if (action == null || !mounted) return;
+
+    if (action == 'collect') {
+      final folder = await pickServerResourceFavoriteFolder(context);
+      if (folder == null) return;
+      try {
+        await PicaServer.instance
+            .addResourceFavorite(id: widget.comic.id, folder: folder);
+        showToast(message: "已收藏".tl);
+      } catch (e) {
+        showToast(message: e.toString());
+      }
+    } else if (action == 'remove') {
+      try {
+        await PicaServer.instance.removeResourceFavorite(widget.comic.id);
+        showToast(message: "已删除".tl);
+      } catch (e) {
+        showToast(message: e.toString());
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: "更多".tl,
+      onPressed: _showMenu,
+      icon: const Icon(Icons.more_vert, size: 20),
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+      padding: EdgeInsets.zero,
+    );
+  }
 }

@@ -7,7 +7,11 @@ Future<void> migrateLegacySettings() async {
   var pageTabsMigrated = _migratePageTabSettings();
   var initialPageMigrated = _migrateInitialPageSetting();
   var networkFavoritesMigrated = _migrateNetworkFavorites();
-  if (!pageTabsMigrated && !initialPageMigrated && !networkFavoritesMigrated) {
+  var networkResourceFavoritesMigrated = _migrateNetworkResourceFavorites();
+  if (!pageTabsMigrated &&
+      !initialPageMigrated &&
+      !networkFavoritesMigrated &&
+      !networkResourceFavoritesMigrated) {
     return;
   }
   await appdata.updateSettings(false);
@@ -75,6 +79,29 @@ bool _migrateNetworkFavorites() {
     appdata.appSettings.networkFavorites = [
       ...appdata.appSettings.networkFavorites,
       kServerFavoritesKey,
+    ];
+  }
+  appdata.implicitData[migratedIndex] = "1";
+  appdata.writeImplicitData();
+  return true;
+}
+
+/// 为网络收藏配置补充服务器资源收藏条目（一次性，本机迁移标记防复活）。
+///
+/// 标记存于隐式数据（不同步、每设备一次）：用户之后隐藏资源收藏不会复活。
+bool _migrateNetworkResourceFavorites() {
+  const migratedIndex = 8;
+  while (appdata.implicitData.length <= migratedIndex) {
+    appdata.implicitData.add("0");
+  }
+  if (appdata.implicitData[migratedIndex] == "1") {
+    return false;
+  }
+  if (!appdata.appSettings.networkFavorites
+      .contains(kServerResourceFavoritesKey)) {
+    appdata.appSettings.networkFavorites = [
+      ...appdata.appSettings.networkFavorites,
+      kServerResourceFavoritesKey,
     ];
   }
   appdata.implicitData[migratedIndex] = "1";

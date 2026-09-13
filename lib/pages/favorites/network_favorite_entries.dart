@@ -4,6 +4,7 @@ import 'package:pica_comic/comic_source/comic_source.dart';
 
 import 'network_favorite_page.dart';
 import 'server_favorites.dart';
+import 'server_resource_favorites.dart';
 
 /// 网络收藏区的一个条目：漫画源的网络收藏夹，或服务器收藏。
 ///
@@ -23,7 +24,7 @@ class NetworkFavoriteEntry {
   final Widget Function(Key key) buildContent;
 }
 
-/// 全部网络收藏条目：漫画源收藏 + 服务器收藏。
+/// 全部网络收藏条目：漫画源收藏 + 服务器收藏 + 服务器资源收藏。
 List<NetworkFavoriteEntry> allNetworkFavoriteEntries() => [
       for (var source in ComicSource.sources)
         if (source.favoriteData != null)
@@ -37,6 +38,11 @@ List<NetworkFavoriteEntry> allNetworkFavoriteEntries() => [
         key: kServerFavoritesKey,
         title: "服务器收藏",
         buildContent: (key) => ServerFavoritesView(key: key),
+      ),
+      NetworkFavoriteEntry(
+        key: kServerResourceFavoritesKey,
+        title: "服务器资源收藏",
+        buildContent: (key) => ServerResourceFavoritesView(key: key),
       ),
     ];
 
