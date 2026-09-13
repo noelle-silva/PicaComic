@@ -13,6 +13,7 @@ import 'package:pica_comic/network/download.dart';
 import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/pages/comic_page.dart';
+import 'package:pica_comic/pages/open_source_comic.dart';
 import 'package:pica_comic/pages/reader/comic_reading_page.dart';
 import 'package:pica_comic/tools/io_tools.dart';
 import 'package:pica_comic/tools/time.dart';
@@ -293,6 +294,14 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
 
   @override
   bool get moreInfoBelowTags => true;
+
+  /// 有源信息时提供"源页面"入口（还原失败则隐藏）。
+  @override
+  ActionFunc? get openSourceComicPage {
+    final item = data?.comic.toDownloadedItem();
+    if (item == null) return null;
+    return () => openSourceComic(item);
+  }
 
   @override
   Widget? get buildMoreInfo => _ServerComicInfoCard(comic: data?.comic);

@@ -731,6 +731,9 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
 
   String? get likeCount => null;
 
+  /// 打开源漫画页面的回调（如服务器漫画跳回源站详情页）；为 null 时不显示入口。
+  ActionFunc? get openSourceComicPage => null;
+
   /// display uploader info
   Card? get uploaderInfo;
 
@@ -1434,6 +1437,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
     }
 
     final width = MediaQuery.of(context).size.width;
+    final openSource = openSourceComicPage;
 
     return SizedBox(
       width: double.infinity,
@@ -1610,6 +1614,8 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                     showToast(message: "${"创建任务失败".tl}: $e");
                   }
                 }),
+              if (openSource != null)
+                buildItem("源页面".tl, Icons.open_in_new, openSource),
               if (onLike != null)
                 buildItem(likeCount ?? "喜欢".tl,
                     isLiked ? Icons.favorite : Icons.favorite_border, onLike!),
