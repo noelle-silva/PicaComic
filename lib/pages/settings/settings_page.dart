@@ -33,6 +33,7 @@ import '../../network/download.dart';
 import '../../network/eh_network/eh_main_network.dart';
 import '../../network/http_client.dart';
 import '../../network/http_proxy.dart';
+import '../../network/pica_server.dart';
 import '../../network/jm_network/jm_network.dart';
 import '../../network/nhentai_network/nhentai_main_network.dart';
 import '../../network/update.dart';
@@ -56,6 +57,7 @@ part "nh_settings.dart";
 part "comic_source_settings.dart";
 part "blocking_keyword_page.dart";
 part "app_settings.dart";
+part "server_settings.dart";
 part 'components.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -78,7 +80,17 @@ class _SettingsPageState extends State<SettingsPage> implements PopEntry{
 
   bool get enableTwoViews => !UiMode.m1(context);
 
-  final categories = <String>["浏览", "漫画源", "阅读", "外观", "本地收藏", "APP", "网络", "关于"];
+  final categories = <String>[
+    "浏览",
+    "漫画源",
+    "阅读",
+    "外观",
+    "本地收藏",
+    "APP",
+    "网络",
+    "服务器",
+    "关于"
+  ];
 
   final icons = <IconData>[
     Icons.explore,
@@ -88,6 +100,7 @@ class _SettingsPageState extends State<SettingsPage> implements PopEntry{
     Icons.collections_bookmark_rounded,
     Icons.apps,
     Icons.public,
+    Icons.cloud,
     Icons.info
   ];
 
@@ -531,12 +544,6 @@ class _SettingsPageState extends State<SettingsPage> implements PopEntry{
           onTap: () => syncDataSettings(context),
         ),
         ListTile(
-          leading: const Icon(Icons.cloud),
-          title: Text("私有服务器".tl),
-          trailing: const Icon(Icons.arrow_right),
-          onTap: () => serverSettings(context),
-        ),
-        ListTile(
           title: Text("隐私".tl),
         ),
         if (App.isAndroid)
@@ -679,7 +686,8 @@ class _SettingsPageState extends State<SettingsPage> implements PopEntry{
       4 => const LocalFavoritesSettings(),
       5 => buildAppSettings(),
       6 => const NetworkSettings(),
-      7 => buildAbout(),
+      7 => const ServerSettings(),
+      8 => buildAbout(),
       _ => throw UnimplementedError()
     };
 
