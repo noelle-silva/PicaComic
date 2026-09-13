@@ -24,7 +24,6 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
   List<ServerTask> tasks = const [];
   Timer? _timer;
   bool _requestInFlight = false;
-  int? _maxConcurrent;
   bool _selectMode = false;
   final Set<String> _selectedTaskIds = {};
 
@@ -32,7 +31,6 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
   void initState() {
     super.initState();
     _load();
-    _loadConfig(silent: true);
     _timer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (!mounted) return;
       if (loading) return;
@@ -89,21 +87,6 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
     }
   }
 
-  Future<void> _loadConfig({bool silent = false}) async {
-    if (!PicaServer.instance.enabled) return;
-    try {
-      final v = await PicaServer.instance.getMaxConcurrent();
-      if (!mounted) return;
-      setState(() {
-        _maxConcurrent = v;
-      });
-    } catch (e) {
-      if (!silent) {
-        showToast(message: e.toString());
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final selectedCount = _selectedTaskIds.length;
@@ -138,11 +121,6 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
               tooltip: "多选".tl,
               onPressed: _enterSelectMode,
               icon: const Icon(Icons.checklist),
-            ),
-            IconButton(
-              tooltip: "并发".tl,
-              onPressed: _openConcurrencyDialog,
-              icon: const Icon(Icons.tune),
             ),
             IconButton(
               tooltip: "刷新".tl,
@@ -583,91 +561,6 @@ class _ServerTasksPageState extends State<ServerTasksPage> {
         ? "${"已删除".tl} $ok"
         : "${"已删除".tl} $ok, ${"失败".tl} $failed";
     showToast(message: msg);
-  }
-
-  Future<void> _openConcurrencyDialog() async {
-    if (!PicaServer.instance.enabled) {
-      showToast(message: "未配置服务器".tl);
-      return;
-    }
-    await _loadConfig(silent: true);
-    if (!mounted) return;
-    var value = (_maxConcurrent ?? 1).clamp(1, 20);
-
-    final controller = TextEditingController(text: value.toString());
-
-    await showDialog(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: Text("下载并发".tl),
-          content: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(
-                onPressed: () {
-                  value = (value - 1).clamp(1, 20);
-                  controller.text = value.toString();
-                },
-                icon: const Icon(Icons.remove),
-              ),
-              SizedBox(
-                width: 80,
-                child: TextField(
-                  controller: controller,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  textAlign: TextAlign.center,
-                ),
-              ),
-              IconButton(
-                onPressed: () {
-                  value = (value + 1).clamp(1, 20);
-                  controller.text = value.toString();
-                },
-                icon: const Icon(Icons.add),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: Text("取消".tl),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final parsed = int.tryParse(controller.text) ?? value;
-                value = parsed.clamp(1, 20);
-                if (!mounted) return;
-                final dialog = showLoadingDialog(
-                  context,
-                  barrierDismissible: false,
-                  allowCancel: false,
-                  message: "设置中".tl,
-                );
-                try {
-                  final nav = Navigator.of(dialogContext);
-                  final newV = await PicaServer.instance.setMaxConcurrent(value);
-                  dialog.close();
-                  if (!mounted) return;
-                  setState(() {
-                    _maxConcurrent = newV;
-                  });
-                  if (dialogContext.mounted) {
-                    nav.pop();
-                  }
-                  showToast(message: "${"已设置并发".tl}: $newV");
-                } catch (e) {
-                  dialog.close();
-                  showToast(message: e.toString());
-                }
-              },
-              child: Text("确定".tl),
-            ),
-          ],
-        );
-      },
-    );
   }
 }
 
