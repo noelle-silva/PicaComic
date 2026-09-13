@@ -600,6 +600,9 @@ class ComicPageLogic<T extends Object> extends StateController {
   int colorIndex = 0;
   bool? favoriteOnPlatform;
 
+  /// 详情页标签选中集合（页面级，如服务器漫画的标签搜索）。
+  final Set<String> selectedTags = {};
+
   ComicServerStatus serverStatus = ComicServerStatus.unknown;
 
   Timer? _serverPollTimer;
@@ -790,6 +793,9 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
 
   /// 操作区末尾的额外条目（默认无，由具体页面扩展）。
   List<Widget> buildExtraActionItems(ComicPageLogic<T> logic) => const [];
+
+  /// 标签组末尾的附加操作组件（默认无，如服务器漫画的标签搜索按钮）。
+  Widget? buildTagAction(ComicPageLogic logic, BuildContext context) => null;
 
   /// 该漫画在私人服务器体系中的源标识；null 表示不支持服务器功能。
   String? get serverSourceKey => switch (sourceKey) {
@@ -1255,6 +1261,8 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
       _logic.colorIndex++;
     }
 
+    final selected = !title && _logic.selectedTags.contains(text);
+
     return GestureDetector(
       onLongPressStart: (details) {
         showMenu(
@@ -1287,8 +1295,10 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                 ? colors[_logic.colorIndex % colors.length]
                     .shade100
                     .withOpacity(0.6)
-                : ElevationOverlay.applySurfaceTint(
-                    colorScheme.surface, colorScheme.surfaceTint, 3),
+                : (selected
+                    ? colorScheme.primaryContainer
+                    : ElevationOverlay.applySurfaceTint(
+                        colorScheme.surface, colorScheme.surfaceTint, 3)),
             shape:
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             elevation: 0,
@@ -1711,13 +1721,19 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
 
     _logic.colorIndex = 0;
 
-    for (var key in tags!.keys) {
+    final tagAction = buildTagAction(logic, context);
+    final keys = tags!.keys.toList();
+
+    for (var i = 0; i < keys.length; i++) {
+      final key = keys[i];
       yield Padding(
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
         child: Wrap(
           children: [
             buildInfoCard(key, context, title: true),
-            for (var tag in tags![key]!) buildInfoCard(tag, context, key: key)
+            for (var tag in tags![key]!)
+              buildInfoCard(tag, context, key: key),
+            if (i == keys.length - 1 && tagAction != null) tagAction,
           ],
         ),
       );
