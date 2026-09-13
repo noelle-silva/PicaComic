@@ -681,6 +681,178 @@ class PicaServer {
       'items': ids.map((e) => {'id': e}).toList(),
     });
   }
+
+  Future<List<ServerSubscription>> listSubscriptions() async {
+    final dio = _dio();
+    final res = await dio.get('/api/v1/subscriptions');
+    final data = res.data;
+    if (data is! Map) return const [];
+    final list = data['subscriptions'];
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((e) => ServerSubscription.fromMap(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  Future<bool> containsSubscription({
+    required String source,
+    required String target,
+  }) async {
+    final dio = _dio();
+    final res = await dio.get(
+      '/api/v1/subscriptions/contains',
+      queryParameters: {'source': source, 'target': target},
+    );
+    final data = res.data;
+    if (data is! Map) return false;
+    return data['exists'] == true;
+  }
+
+  /// 查询订阅详情（未订阅返回 null）。
+  Future<ServerSubscription?> getSubscription({
+    required String source,
+    required String target,
+  }) async {
+    final dio = _dio();
+    final res = await dio.get(
+      '/api/v1/subscriptions/contains',
+      queryParameters: {'source': source, 'target': target},
+    );
+    final data = res.data;
+    if (data is! Map || data['exists'] != true) return null;
+    final sub = data['subscription'];
+    if (sub is! Map) return null;
+    return ServerSubscription.fromMap(Map<String, dynamic>.from(sub));
+  }
+
+  Future<void> createSubscription({
+    required String source,
+    required String target,
+    required String title,
+    required String subtitle,
+    required String cover,
+    required List<String> tags,
+    required bool autoDownload,
+    int? intervalMinutes,
+  }) async {
+    final dio = _dio();
+    await dio.post('/api/v1/subscriptions', data: {
+      'source': source,
+      'target': target,
+      'title': title,
+      'subtitle': subtitle,
+      'cover': cover,
+      'tags': tags,
+      'level': autoDownload ? 'download' : 'update',
+      if (intervalMinutes != null) 'intervalMinutes': intervalMinutes,
+    });
+  }
+
+  /// 更新订阅；[clearInterval] 为 true 时恢复使用全局默认频率。
+  Future<void> updateSubscription({
+    required String source,
+    required String target,
+    bool? autoDownload,
+    int? intervalMinutes,
+    bool clearInterval = false,
+  }) async {
+    final dio = _dio();
+    await dio.patch('/api/v1/subscriptions', data: {
+      'source': source,
+      'target': target,
+      if (autoDownload != null) 'level': autoDownload ? 'download' : 'update',
+      if (clearInterval) 'intervalMinutes': null,
+      if (!clearInterval && intervalMinutes != null)
+        'intervalMinutes': intervalMinutes,
+    });
+  }
+
+  Future<void> removeSubscription({
+    required String source,
+    required String target,
+  }) async {
+    final dio = _dio();
+    await dio.delete('/api/v1/subscriptions', data: {
+      'source': source,
+      'target': target,
+    });
+  }
+
+  /// 手动立即检查（同步执行）；返回检查结果。
+  Future<ServerSubscriptionCheckResult?> checkSubscriptionNow({
+    required String source,
+    required String target,
+  }) async {
+    final dio = _dio();
+    final res = await dio.post('/api/v1/subscriptions/check', data: {
+      'source': source,
+      'target': target,
+    });
+    final data = res.data;
+    if (data is! Map) return null;
+    final result = data['result'];
+    if (result is! Map) return null;
+    return ServerSubscriptionCheckResult.fromMap(
+        Map<String, dynamic>.from(result));
+  }
+
+  Future<List<ServerSubscriptionCheck>> listSubscriptionHistory({
+    required String source,
+    required String target,
+    int limit = 100,
+  }) async {
+    final dio = _dio();
+    final res = await dio.get('/api/v1/subscriptions/history',
+        queryParameters: {
+          'source': source,
+          'target': target,
+          'limit': limit.toString(),
+        });
+    final data = res.data;
+    if (data is! Map) return const [];
+    final list = data['checks'];
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((e) =>
+            ServerSubscriptionCheck.fromMap(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  Future<List<ServerSubscriptionDownload>> listSubscriptionDownloads(
+      {int limit = 100}) async {
+    final dio = _dio();
+    final res = await dio.get('/api/v1/subscriptions/downloads',
+        queryParameters: {'limit': limit.toString()});
+    final data = res.data;
+    if (data is! Map) return const [];
+    final list = data['downloads'];
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((e) =>
+            ServerSubscriptionDownload.fromMap(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  Future<int> getSubscriptionDefaultIntervalMinutes() async {
+    final dio = _dio();
+    final res = await dio.get('/api/v1/subscriptions/config');
+    final data = res.data;
+    if (data is! Map) return 0;
+    return int.tryParse((data['defaultIntervalMinutes'] ?? '').toString()) ?? 0;
+  }
+
+  Future<int> setSubscriptionDefaultIntervalMinutes(int minutes) async {
+    final dio = _dio();
+    final res = await dio.put('/api/v1/subscriptions/config',
+        data: {'defaultIntervalMinutes': minutes});
+    final data = res.data;
+    if (data is! Map) return minutes;
+    return int.tryParse((data['defaultIntervalMinutes'] ?? '').toString()) ??
+        minutes;
+  }
 }
 
 class ServerReadInfo {
@@ -871,6 +1043,9 @@ class ComicServerStatus {
   /// 是否已加入服务器资源收藏。
   final bool? resourceFavorite;
 
+  /// 是否已订阅（服务器自动追更）。
+  final bool? subscribed;
+
   /// 服务器上的漫画 id（已存在时有值）。
   final String? comicId;
 
@@ -881,6 +1056,7 @@ class ComicServerStatus {
     this.downloadState = ServerDownloadState.unknown,
     this.favorite,
     this.resourceFavorite,
+    this.subscribed,
     this.comicId,
     this.downloadedEps = const [],
   });
@@ -891,6 +1067,7 @@ class ComicServerStatus {
     ServerDownloadState? downloadState,
     bool? favorite,
     bool? resourceFavorite,
+    bool? subscribed,
     String? comicId,
     List<int>? downloadedEps,
   }) {
@@ -898,6 +1075,7 @@ class ComicServerStatus {
       downloadState: downloadState ?? this.downloadState,
       favorite: favorite ?? this.favorite,
       resourceFavorite: resourceFavorite ?? this.resourceFavorite,
+      subscribed: subscribed ?? this.subscribed,
       comicId: comicId ?? this.comicId,
       downloadedEps: downloadedEps ?? this.downloadedEps,
     );
@@ -1031,6 +1209,225 @@ class ServerResourceFavoriteItem {
       coverUrl: map['coverUrl']?.toString(),
       orderValue: int.tryParse((map['orderValue'] ?? '').toString()),
       addedAt: int.tryParse((map['addedAt'] ?? '').toString()),
+      updatedAt: int.tryParse((map['updatedAt'] ?? '').toString()),
+    );
+  }
+}
+
+/// 服务器漫画订阅。
+class ServerSubscription {
+  final String source;
+  final String target;
+  final String title;
+  final String subtitle;
+  final String cover;
+  final List<String> tags;
+
+  /// 'update'（仅订阅更新）或 'download'（订阅+下载）。
+  final String level;
+  final int? intervalMinutes;
+  final int effectiveIntervalMinutes;
+  final bool enabled;
+  final int? lastCheckAt;
+  final int? nextCheckAt;
+  final String? lastError;
+  final int? lastUpdatedAt;
+  final int? createdAt;
+  final int? updatedAt;
+
+  const ServerSubscription({
+    required this.source,
+    required this.target,
+    required this.title,
+    required this.subtitle,
+    required this.cover,
+    required this.tags,
+    required this.level,
+    required this.effectiveIntervalMinutes,
+    required this.enabled,
+    this.intervalMinutes,
+    this.lastCheckAt,
+    this.nextCheckAt,
+    this.lastError,
+    this.lastUpdatedAt,
+    this.createdAt,
+    this.updatedAt,
+  });
+
+  bool get autoDownload => level == 'download';
+
+  factory ServerSubscription.fromMap(Map<String, dynamic> map) {
+    return ServerSubscription(
+      source: (map['source'] ?? '').toString(),
+      target: (map['target'] ?? '').toString(),
+      title: (map['title'] ?? '').toString(),
+      subtitle: (map['subtitle'] ?? '').toString(),
+      cover: (map['cover'] ?? '').toString(),
+      tags: (map['tags'] is List)
+          ? List<String>.from((map['tags'] as List).map((e) => e.toString()))
+          : const [],
+      level: (map['level'] ?? 'update').toString(),
+      intervalMinutes: int.tryParse((map['intervalMinutes'] ?? '').toString()),
+      effectiveIntervalMinutes:
+          int.tryParse((map['effectiveIntervalMinutes'] ?? '').toString()) ?? 0,
+      enabled: map['enabled'] != false,
+      lastCheckAt: int.tryParse((map['lastCheckAt'] ?? '').toString()),
+      nextCheckAt: int.tryParse((map['nextCheckAt'] ?? '').toString()),
+      lastError: map['lastError']?.toString(),
+      lastUpdatedAt: int.tryParse((map['lastUpdatedAt'] ?? '').toString()),
+      createdAt: int.tryParse((map['createdAt'] ?? '').toString()),
+      updatedAt: int.tryParse((map['updatedAt'] ?? '').toString()),
+    );
+  }
+}
+
+/// 订阅更新历史记录（发现更新或检查失败）。
+class ServerSubscriptionCheck {
+  final int? checkedAt;
+
+  /// 'updated' | 'failed'
+  final String status;
+  final String? message;
+  final List<String> newItems;
+  final int? totalItems;
+
+  const ServerSubscriptionCheck({
+    this.checkedAt,
+    required this.status,
+    this.message,
+    this.newItems = const [],
+    this.totalItems,
+  });
+
+  factory ServerSubscriptionCheck.fromMap(Map<String, dynamic> map) {
+    return ServerSubscriptionCheck(
+      checkedAt: int.tryParse((map['checkedAt'] ?? '').toString()),
+      status: (map['status'] ?? '').toString(),
+      message: map['message']?.toString(),
+      newItems: (map['newItems'] is List)
+          ? List<String>.from(
+              (map['newItems'] as List).map((e) => e.toString()))
+          : const [],
+      totalItems: int.tryParse((map['totalItems'] ?? '').toString()),
+    );
+  }
+}
+
+/// 手动立即检查的结果。
+class ServerSubscriptionCheckResult {
+  /// 'updated' | 'none' | 'failed' | 'busy'
+  final String status;
+  final List<String> newItems;
+  final int? totalItems;
+  final String? latestItem;
+
+  /// 最近更新的一话及更新时间（倒序，最新在前；非分集源为空）。
+  final List<ServerSubscriptionRecentItem> recentItems;
+  final bool firstCheck;
+  final String? message;
+  final int? checkedAt;
+
+  const ServerSubscriptionCheckResult({
+    required this.status,
+    this.newItems = const [],
+    this.totalItems,
+    this.latestItem,
+    this.recentItems = const [],
+    this.firstCheck = false,
+    this.message,
+    this.checkedAt,
+  });
+
+  factory ServerSubscriptionCheckResult.fromMap(Map<String, dynamic> map) {
+    return ServerSubscriptionCheckResult(
+      status: (map['status'] ?? '').toString(),
+      newItems: (map['newItems'] is List)
+          ? List<String>.from(
+              (map['newItems'] as List).map((e) => e.toString()))
+          : const [],
+      totalItems: int.tryParse((map['totalItems'] ?? '').toString()),
+      latestItem: map['latestItem']?.toString(),
+      recentItems: (map['recentItems'] is List)
+          ? (map['recentItems'] as List)
+              .whereType<Map>()
+              .map((e) => ServerSubscriptionRecentItem.fromMap(
+                  Map<String, dynamic>.from(e)))
+              .toList()
+          : const [],
+      firstCheck: map['firstCheck'] == true,
+      message: map['message']?.toString(),
+      checkedAt: int.tryParse((map['checkedAt'] ?? '').toString()),
+    );
+  }
+}
+
+/// 最近更新的一话（名称 + 源站更新时间）。
+class ServerSubscriptionRecentItem {
+  final String name;
+  final int? updatedAt;
+
+  const ServerSubscriptionRecentItem({required this.name, this.updatedAt});
+
+  factory ServerSubscriptionRecentItem.fromMap(Map<String, dynamic> map) {
+    return ServerSubscriptionRecentItem(
+      name: (map['name'] ?? '').toString(),
+      updatedAt: int.tryParse((map['updatedAt'] ?? '').toString()),
+    );
+  }
+}
+
+/// 订阅自动下载历史记录。
+class ServerSubscriptionDownload {
+  final int? id;
+  final String source;
+  final String target;
+  final String? taskId;
+  final String title;
+  final String subtitle;
+  final String cover;
+  final List<String> newItems;
+  final String status;
+  final String? message;
+  final int? progress;
+  final int? total;
+  final int? createdAt;
+  final int? updatedAt;
+
+  const ServerSubscriptionDownload({
+    this.id,
+    required this.source,
+    required this.target,
+    this.taskId,
+    required this.title,
+    required this.subtitle,
+    required this.cover,
+    this.newItems = const [],
+    required this.status,
+    this.message,
+    this.progress,
+    this.total,
+    this.createdAt,
+    this.updatedAt,
+  });
+
+  factory ServerSubscriptionDownload.fromMap(Map<String, dynamic> map) {
+    return ServerSubscriptionDownload(
+      id: int.tryParse((map['id'] ?? '').toString()),
+      source: (map['source'] ?? '').toString(),
+      target: (map['target'] ?? '').toString(),
+      taskId: map['taskId']?.toString(),
+      title: (map['title'] ?? '').toString(),
+      subtitle: (map['subtitle'] ?? '').toString(),
+      cover: (map['cover'] ?? '').toString(),
+      newItems: (map['newItems'] is List)
+          ? List<String>.from(
+              (map['newItems'] as List).map((e) => e.toString()))
+          : const [],
+      status: (map['status'] ?? '').toString(),
+      message: map['message']?.toString(),
+      progress: int.tryParse((map['progress'] ?? '').toString()),
+      total: int.tryParse((map['total'] ?? '').toString()),
+      createdAt: int.tryParse((map['createdAt'] ?? '').toString()),
       updatedAt: int.tryParse((map['updatedAt'] ?? '').toString()),
     );
   }
