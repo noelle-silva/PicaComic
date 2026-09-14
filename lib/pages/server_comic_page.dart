@@ -21,15 +21,19 @@ import 'package:pica_comic/tools/io_tools.dart';
 import 'package:pica_comic/tools/time.dart';
 import 'package:pica_comic/tools/translations.dart';
 
-/// 服务器漫画详情页数据：漫画 + 章节信息 + 随机推荐。
+/// 服务器漫画详情页数据：漫画 + 章节信息 + 预览图 + 随机推荐。
 class ServerComicDetailData {
   final ServerComic comic;
 
   final ServerReadInfo readInfo;
 
+  /// 预览缩略图地址（有分集取第一话，无分集取整本；加载失败时为空）。
+  final List<String> previewUrls;
+
   final List<ServerComic> recommendations;
 
-  const ServerComicDetailData(this.comic, this.readInfo, this.recommendations);
+  const ServerComicDetailData(
+      this.comic, this.readInfo, this.previewUrls, this.recommendations);
 }
 
 /// 服务器漫画详情页（与其他源详情页同构，复用统一骨架）。
@@ -141,7 +145,10 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
       };
 
   @override
-  int? get pages => null;
+  int? get pages {
+    final count = data?.previewUrls.length ?? 0;
+    return count == 0 ? null : count;
+  }
 
   @override
   String? get introduction => null;
@@ -150,7 +157,11 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
   Card? get uploaderInfo => null;
 
   @override
-  ThumbnailsData? get thumbnailsCreator => null;
+  ThumbnailsData? get thumbnailsCreator {
+    final urls = data?.previewUrls ?? const [];
+    if (urls.isEmpty) return null;
+    return ThumbnailsData(urls, (page) async => const Res([]), 1);
+  }
 
   @override
   Future<Res<ServerComicDetailData>> loadData() async {
@@ -171,10 +182,26 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
       return Res(ServerComicDetailData(
         comic,
         readInfo,
+        await _loadPreviewUrls(readInfo),
         others.take(8).toList(),
       ));
     } catch (e) {
       return Res.error(e.toString());
+    }
+  }
+
+  /// 预览内容：有分集取第一话，无分集取整本。
+  /// 预览加载失败不阻塞详情页（降级为空，页面照常显示）。
+  Future<List<String>> _loadPreviewUrls(ServerReadInfo readInfo) async {
+    final ep = readInfo.eps.isNotEmpty ? readInfo.eps.first.ep : 0;
+    try {
+      final names = await PicaServer.instance.listPages(comicId, ep);
+      return [
+        for (final name in names)
+          PicaServer.instance.comicImageUrl(comicId, ep, name, thumbnail: true),
+      ];
+    } catch (_) {
+      return const [];
     }
   }
 
@@ -205,6 +232,13 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
           history!.ep < 1 ? 1 : history.ep,
           initialPage: history.page,
         ));
+  }
+
+  /// 点击预览缩略图：打开预览内容的对应页（预览即第一话 / 整本）。
+  @override
+  void onThumbnailTapped(int index) async {
+    await History.findOrCreate(data!.comic, page: index + 1);
+    App.globalTo(() => _readingPage(1, initialPage: index + 1));
   }
 
   ComicReadingPage _readingPage(int ep, {int initialPage = 1}) {
@@ -250,15 +284,6 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
         }
         targetDir.createSync(recursive: true);
 
-        String normalizedBaseUrl() {
-          var v = PicaServer.instance.baseUrl.trim();
-          while (v.endsWith('/')) {
-            v = v.substring(0, v.length - 1);
-          }
-          return v;
-        }
-
-        final base = normalizedBaseUrl();
         final headers = PicaServer.instance.imageHeaders();
         final dio = Dio(
           BaseOptions(
@@ -286,15 +311,14 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
             final pages = await PicaServer.instance.listPages(comic.id, epNo);
             for (final name in pages) {
               final url =
-                  '$base/api/v1/comics/${Uri.encodeComponent(comic.id)}/image?ep=$epNo&name=${Uri.encodeQueryComponent(name)}';
+                  PicaServer.instance.comicImageUrl(comic.id, epNo, name);
               await dio.download(url, '${epDir.path}$pathSep$name');
             }
           }
         } else {
           final pages = await PicaServer.instance.listPages(comic.id, 0);
           for (final name in pages) {
-            final url =
-                '$base/api/v1/comics/${Uri.encodeComponent(comic.id)}/image?ep=0&name=${Uri.encodeQueryComponent(name)}';
+            final url = PicaServer.instance.comicImageUrl(comic.id, 0, name);
             await dio.download(url, '${targetDir.path}$pathSep$name');
           }
         }
