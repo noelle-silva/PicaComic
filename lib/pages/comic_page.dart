@@ -1173,6 +1173,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
       [bool sliver = true]) {
     var body = LayoutBuilder(builder: (context, constrains) {
       var width = constrains.maxWidth;
+      // 加载骨架不构建操作区（按钮依赖已加载数据；数据到达后照常显示）。
       return Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1225,7 +1226,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                           child: Text("${pages}P",
                               style: const TextStyle(fontSize: 12)),
                         ),
-                      if (width >= 500)
+                      if (width >= 500 && !logic.loading)
                         buildActions(logic, context, false).paddingTop(12),
                     ],
                   ),
@@ -1233,7 +1234,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
               ],
             ),
           ).paddingHorizontal(10).paddingBottom(12),
-          if (width < 500)
+          if (width < 500 && !logic.loading)
             buildActions(logic, context, true).paddingHorizontal(12),
         ],
       );

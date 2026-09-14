@@ -125,13 +125,13 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
   }
 
   @override
-  String? get title => data!.comic.title;
+  String? get title => data?.comic.title;
 
   @override
-  String? get subTitle => data!.comic.subtitle;
+  String? get subTitle => data?.comic.subtitle;
 
   @override
-  String? get cover => data!.comic.coverUrl;
+  String? get cover => data?.comic.coverUrl;
 
   @override
   Map<String, String> get headers => PicaServer.instance.imageHeaders();
@@ -140,9 +140,11 @@ class ServerComicPage extends BaseComicPage<ServerComicDetailData> {
   String get source => "私人服务器".tl;
 
   @override
-  Map<String, List<String>> get tags => {
-        if (data!.comic.tags.isNotEmpty) "标签".tl: data!.comic.tags,
-      };
+  Map<String, List<String>> get tags {
+    final comic = data?.comic;
+    if (comic == null || comic.tags.isEmpty) return const {};
+    return {"标签".tl: comic.tags};
+  }
 
   @override
   int? get pages {
