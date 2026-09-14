@@ -77,7 +77,7 @@ dart run bin/server.dart
 - `GET /api/v1/comics/{id}/cover`
 - `GET /api/v1/comics/{id}/read`：返回章节信息（用于在线阅读）
 - `GET /api/v1/comics/{id}/pages?ep={ep}`：返回指定章节的页面文件名列表
-- `GET /api/v1/comics/{id}/image?ep={ep}&name={filename}`：返回单页图片
+- `GET /api/v1/comics/{id}/image?ep={ep}&name={filename}`：返回单页图片；追加 `&thumb=1` 返回缩略图（首次访问生成并缓存于漫画目录）
 - `DELETE /api/v1/comics/{id}`
 - 源信息收藏（收藏各来源的漫画信息，与是否已下载无关）
   - `GET /api/v1/favorites/folders`

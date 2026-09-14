@@ -19,7 +19,11 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-const _picaServerBuild = '2026-02-21.6';
+const _picaServerBuild = '2026-09-14.1';
+
+/// 漫画页缩略图的目标宽度与 JPEG 质量（生成后缓存复用）。
+const _comicThumbnailWidth = 360;
+const _comicThumbnailQuality = 85;
 
 enum _TaskStopMode {
   pause,
@@ -4797,6 +4801,15 @@ Handler buildHandler({
       return _json(404, {'ok': false, 'error': 'not found'});
     }
 
+    if (req.url.queryParameters['thumb'] == '1') {
+      return _comicThumbnailResponse(
+        comicDir: comicDir,
+        source: file,
+        ep: ep,
+        name: name,
+      );
+    }
+
     final mime = lookupMimeType(file.path) ?? 'application/octet-stream';
     return Response.ok(file.openRead(), headers: {'content-type': mime});
   });
@@ -6945,6 +6958,52 @@ Object? _tryDecodeJson(Object? value) {
 
 String _safeId(String id) {
   return id.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+}
+
+/// 漫画页缩略图响应：缓存于 `<漫画目录>/thumbs/<ep>/<文件名>.jpg`，首次访问生成；
+/// 无法解码时降级返回原图（不缓存），保证预览始终有图可用。
+Future<Response> _comicThumbnailResponse({
+  required Directory comicDir,
+  required File source,
+  required int ep,
+  required String name,
+}) async {
+  final thumbFile = File(
+    p.join(comicDir.path, 'thumbs', ep.toString(), '$name.jpg'),
+  );
+  if (!thumbFile.existsSync()) {
+    final bytes = _buildThumbnailBytes(await source.readAsBytes());
+    if (bytes == null) {
+      final mime = lookupMimeType(source.path) ?? 'application/octet-stream';
+      return Response.ok(source.openRead(), headers: {'content-type': mime});
+    }
+    thumbFile.parent.createSync(recursive: true);
+    thumbFile.writeAsBytesSync(bytes);
+  }
+  return Response.ok(
+    thumbFile.openRead(),
+    headers: {'content-type': 'image/jpeg'},
+  );
+}
+
+/// 将原图缩放编码为 JPEG 缩略图；无法解码或处理失败时返回 null。
+Uint8List? _buildThumbnailBytes(Uint8List source) {
+  try {
+    final decoded = img.decodeImage(source);
+    if (decoded == null) return null;
+    final resized = decoded.width > _comicThumbnailWidth
+        ? img.copyResize(
+            decoded,
+            width: _comicThumbnailWidth,
+            interpolation: img.Interpolation.average,
+          )
+        : decoded;
+    return Uint8List.fromList(
+      img.encodeJpg(resized, quality: _comicThumbnailQuality),
+    );
+  } catch (_) {
+    return null;
+  }
 }
 
 String? _boundaryFromContentType(String? contentType) {
