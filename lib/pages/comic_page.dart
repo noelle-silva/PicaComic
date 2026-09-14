@@ -586,6 +586,12 @@ class ThumbnailsData {
   ThumbnailsData(this.thumbnails, this.load, this.maxPage);
 }
 
+/// 详情页"预览 / 相关推荐"区的当前展示项。
+enum ComicDetailSection {
+  preview,
+  recommendation,
+}
+
 class ComicPageLogic<T extends Object> extends StateController {
   bool loading = true;
   T? data;
@@ -601,6 +607,9 @@ class ComicPageLogic<T extends Object> extends StateController {
   bool showFullEps = false;
   int colorIndex = 0;
   bool? favoriteOnPlatform;
+
+  /// 预览 / 相关推荐区当前展示项（两者都有时用于切换）。
+  ComicDetailSection detailSection = ComicDetailSection.preview;
 
   /// 详情页标签选中集合（页面级，如服务器漫画的标签搜索）。
   final Set<String> selectedTags = {};
@@ -1033,8 +1042,7 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
                   buildTags(logic, context),
                   ...buildEpisodeInfo(context),
                   ...buildIntroduction(context),
-                  ...buildThumbnails(context),
-                  ...buildRecommendation(context),
+                  ...buildPreviewAndRecommendation(context),
                   SliverPadding(
                     padding: EdgeInsets.only(
                         bottom: MediaQuery.of(context).padding.bottom),
@@ -2013,37 +2021,32 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
     );
   }
 
+  /// 预览区能否展示（Hitomi/Eh 允许空列表进入渐进加载）。
+  bool get _hasThumbnails =>
+      thumbnails != null &&
+      (thumbnails!.thumbnails.isNotEmpty ||
+          tag.contains("Hitomi") ||
+          tag.contains("Eh"));
+
   List<Widget> buildThumbnails(BuildContext context) {
-    if (thumbnails == null ||
-        (thumbnails!.thumbnails.isEmpty &&
-            !tag.contains("Hitomi") &&
-            !tag.contains("Eh"))) return [];
-    if (thumbnails!.thumbnails.isEmpty) {
-      thumbnails!.get(update);
-    }
+    if (!_hasThumbnails) return [];
     return [
       const SliverPadding(padding: EdgeInsets.all(5)),
       const SliverToBoxAdapter(
         child: Divider(),
       ),
-      SliverToBoxAdapter(
-        child: SizedBox(
-          width: 100,
-          child: Row(
-            children: [
-              const SizedBox(
-                width: 18,
-              ),
-              Text(
-                "预览".tl,
-                style:
-                    const TextStyle(fontWeight: FontWeight.w500, fontSize: 18),
-              )
-            ],
-          ),
-        ),
-      ),
+      _buildSectionTitle("预览".tl),
       const SliverPadding(padding: EdgeInsets.all(5)),
+      ..._buildThumbnailSlivers(context),
+    ];
+  }
+
+  /// 预览内容（不含标题）：空列表先触发一次渐进加载。
+  List<Widget> _buildThumbnailSlivers(BuildContext context) {
+    if (thumbnails!.thumbnails.isEmpty) {
+      thumbnails!.get(update);
+    }
+    return [
       SliverPadding(
         padding: const EdgeInsets.symmetric(horizontal: 8),
         sliver: SliverGrid(
@@ -2103,31 +2106,70 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
   }
 
   List<Widget> buildRecommendation(BuildContext context) {
-    var recommendation = recommendationBuilder(_logic.data!);
+    final recommendation = _recommendationSliver;
     if (recommendation == null) return [];
     return [
       const SliverToBoxAdapter(
         child: Divider(),
       ),
-      SliverToBoxAdapter(
-        child: SizedBox(
-            width: 100,
-            child: Row(
-              children: [
-                const SizedBox(
-                  width: 18,
-                ),
-                Text(
-                  "相关推荐".tl,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w500, fontSize: 18),
-                )
-              ],
-            )),
-      ),
+      _buildSectionTitle("相关推荐".tl),
       const SliverPadding(padding: EdgeInsets.all(5)),
       recommendation,
     ];
+  }
+
+  /// 推荐内容（不含标题）；无推荐时为 null。
+  Widget? get _recommendationSliver => recommendationBuilder(_logic.data!);
+
+  /// 预览 / 相关推荐区：两者都有时用切换标签二选一；只有其一时照常展示。
+  List<Widget> buildPreviewAndRecommendation(BuildContext context) {
+    final recommendation = _recommendationSliver;
+    if (!_hasThumbnails) {
+      return recommendation == null ? [] : buildRecommendation(context);
+    }
+    if (recommendation == null) return buildThumbnails(context);
+
+    return [
+      const SliverPadding(padding: EdgeInsets.all(5)),
+      const SliverToBoxAdapter(
+        child: Divider(),
+      ),
+      SliverToBoxAdapter(
+        child: _DetailSectionSwitcher(
+          section: _logic.detailSection,
+          onChanged: (section) {
+            _logic.detailSection = section;
+            update();
+          },
+        ),
+      ),
+      const SliverPadding(padding: EdgeInsets.all(5)),
+      if (_logic.detailSection == ComicDetailSection.preview)
+        ..._buildThumbnailSlivers(context)
+      else
+        recommendation,
+    ];
+  }
+
+  /// 区块标题行（预览 / 相关推荐共用；两者都有时由切换标签替代）。
+  Widget _buildSectionTitle(String text) {
+    return SliverToBoxAdapter(
+      child: SizedBox(
+        width: 100,
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 18,
+            ),
+            Text(
+              text,
+              style:
+                  const TextStyle(fontWeight: FontWeight.w500, fontSize: 18),
+            )
+          ],
+        ),
+      ),
+    );
   }
 
   void favoriteComic(FavoriteComicWidget widget) {
@@ -2141,6 +2183,72 @@ abstract class BaseComicPage<T extends Object> extends StatelessWidget {
         useSurfaceTintColor: true,
       );
     }
+  }
+}
+
+/// 预览 / 相关推荐切换标签（替代区块标题行）。
+class _DetailSectionSwitcher extends StatelessWidget {
+  const _DetailSectionSwitcher({
+    required this.section,
+    required this.onChanged,
+  });
+
+  final ComicDetailSection section;
+  final ValueChanged<ComicDetailSection> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 18),
+      child: Row(
+        children: [
+          _DetailSectionTab(
+            text: "预览".tl,
+            selected: section == ComicDetailSection.preview,
+            onTap: () => onChanged(ComicDetailSection.preview),
+          ),
+          const SizedBox(width: 20),
+          _DetailSectionTab(
+            text: "相关推荐".tl,
+            selected: section == ComicDetailSection.recommendation,
+            onTap: () => onChanged(ComicDetailSection.recommendation),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 切换标签的单个选项。
+class _DetailSectionTab extends StatelessWidget {
+  const _DetailSectionTab({
+    required this.text,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String text;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        child: Text(
+          text,
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+            color: selected ? scheme.primary : scheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+    );
   }
 }
 
