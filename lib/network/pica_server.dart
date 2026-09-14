@@ -404,6 +404,15 @@ class PicaServer {
     return {'X-Api-Key': apiKey};
   }
 
+  /// 单页图片的完整访问地址（事实源唯一：阅读页、下载、预览共用）。
+  /// [thumbnail] 为 true 时走服务器缩略图（首次访问生成并缓存）。
+  String comicImageUrl(String id, int ep, String name,
+      {bool thumbnail = false}) {
+    final thumb = thumbnail ? '&thumb=1' : '';
+    return '$_normalizedBaseUrl/api/v1/comics/${Uri.encodeComponent(id)}'
+        '/image?ep=$ep&name=${Uri.encodeQueryComponent(name)}$thumb';
+  }
+
   Future<ServerReadInfo> getReadInfo(String id) async {
     final dio = _dio();
     final res = await dio.get('/api/v1/comics/${Uri.encodeComponent(id)}/read');

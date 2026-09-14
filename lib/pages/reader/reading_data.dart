@@ -430,14 +430,6 @@ class PicaServerReadingData extends ReadingData {
                 for (final e in eps) e.ep.toString(): e.title,
               };
 
-  String get _normalizedBaseUrl {
-    var v = PicaServer.instance.baseUrl.trim();
-    while (v.endsWith('/')) {
-      v = v.substring(0, v.length - 1);
-    }
-    return v;
-  }
-
   @override
   String get downloadId => '$kServerComicPrefix$comicId';
 
@@ -472,12 +464,9 @@ class PicaServerReadingData extends ReadingData {
           "服务器页面列表为空：请确认服务器已升级并重启；必要时在服务器端删除该漫画后重新上传。",
         );
       }
-      final base = _normalizedBaseUrl;
       final urls = pages
-          .map(
-            (name) =>
-                '$base/api/v1/comics/${Uri.encodeComponent(comicId)}/image?ep=$realEp&name=${Uri.encodeQueryComponent(name)}',
-          )
+          .map((name) =>
+              PicaServer.instance.comicImageUrl(comicId, realEp, name))
           .toList();
       return Res(urls);
     } catch (e) {
