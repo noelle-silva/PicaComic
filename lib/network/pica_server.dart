@@ -308,6 +308,36 @@ class PicaServer {
     return int.tryParse((data['maxConcurrent'] ?? '').toString()) ?? value;
   }
 
+  /// 读取服务器「并行上传数」配置；旧服务器缺少该字段时返回 1（串行）。
+  Future<int> getMaxUploadConcurrent() async {
+    final dio = _dio();
+    final res = await dio.get(
+      '/api/v1/tasks/config',
+      options: Options(validateStatus: (_) => true),
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      throw Exception((data['error'] ?? 'request failed').toString());
+    }
+    return int.tryParse((data['maxUploadConcurrent'] ?? '1').toString()) ?? 1;
+  }
+
+  Future<int> setMaxUploadConcurrent(int value) async {
+    final dio = _dio();
+    final res = await dio.put(
+      '/api/v1/tasks/config',
+      data: {'maxUploadConcurrent': value},
+      options: Options(validateStatus: (_) => true),
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      throw Exception((data['error'] ?? 'request failed').toString());
+    }
+    return int.tryParse((data['maxUploadConcurrent'] ?? '').toString()) ?? value;
+  }
+
   Future<void> pauseTask(String id) async {
     final dio = _dio();
     final res = await dio.post(

@@ -18,6 +18,8 @@ class _ServerSettingsState extends State<ServerSettings> {
   bool _testing = false;
   bool _loadingConcurrent = false;
   int? _maxConcurrent;
+  bool _loadingUploadConcurrent = false;
+  int? _maxUploadConcurrent;
   bool _loadingInterval = false;
   int? _defaultIntervalMinutes;
 
@@ -37,6 +39,7 @@ class _ServerSettingsState extends State<ServerSettings> {
         TextEditingController(text: uploadMinutes.toString());
 
     _loadConcurrent();
+    _loadUploadConcurrent();
     _loadInterval();
   }
 
@@ -132,15 +135,56 @@ class _ServerSettingsState extends State<ServerSettings> {
       showToast(message: "无法获取服务器配置".tl);
       return;
     }
+    final newValue = await _showConcurrentEditor(
+      title: "下载并发".tl,
+      initial: _maxConcurrent!,
+      save: (v) => PicaServer.instance.setMaxConcurrent(v),
+    );
+    if (newValue != null && mounted) {
+      setState(() => _maxConcurrent = newValue);
+      showToast(message: "${"已设置并发".tl}: $newValue");
+    }
+  }
 
-    var value = _maxConcurrent!.clamp(1, 20);
+  /// 编辑服务器「并行上传数」：客户端同时上传的漫画本数。
+  Future<void> _editUploadConcurrency() async {
+    if (!PicaServer.instance.enabled) {
+      showToast(message: "未配置服务器".tl);
+      return;
+    }
+    if (_maxUploadConcurrent == null) {
+      await _loadUploadConcurrent();
+      if (!mounted) return;
+    }
+    if (_maxUploadConcurrent == null) {
+      showToast(message: "无法获取服务器配置".tl);
+      return;
+    }
+    final newValue = await _showConcurrentEditor(
+      title: "上传并发".tl,
+      initial: _maxUploadConcurrent!,
+      save: (v) => PicaServer.instance.setMaxUploadConcurrent(v),
+    );
+    if (newValue != null && mounted) {
+      setState(() => _maxUploadConcurrent = newValue);
+      showToast(message: "${"已设置并发".tl}: $newValue");
+    }
+  }
+
+  /// 弹出并发数编辑框；返回服务器确认后的值，取消或失败时返回 null。
+  Future<int?> _showConcurrentEditor({
+    required String title,
+    required int initial,
+    required Future<int> Function(int value) save,
+  }) async {
+    var value = initial.clamp(1, 20);
     final controller = TextEditingController(text: value.toString());
 
-    await showDialog(
+    final result = await showDialog<int>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
-          title: Text("下载并发".tl),
+          title: Text(title),
           content: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -177,7 +221,7 @@ class _ServerSettingsState extends State<ServerSettings> {
             FilledButton(
               onPressed: () async {
                 final parsed = int.tryParse(controller.text) ?? value;
-                value = parsed.clamp(1, 20);
+                final target = parsed.clamp(1, 20);
                 if (!mounted) return;
                 final dialog = showLoadingDialog(
                   context,
@@ -187,17 +231,11 @@ class _ServerSettingsState extends State<ServerSettings> {
                 );
                 try {
                   final nav = Navigator.of(dialogContext);
-                  final newV =
-                      await PicaServer.instance.setMaxConcurrent(value);
+                  final newV = await save(target);
                   dialog.close();
-                  if (!mounted) return;
-                  setState(() {
-                    _maxConcurrent = newV;
-                  });
                   if (dialogContext.mounted) {
-                    nav.pop();
+                    nav.pop(newV);
                   }
-                  showToast(message: "${"已设置并发".tl}: $newV");
                 } catch (e) {
                   dialog.close();
                   showToast(message: e.toString());
@@ -210,6 +248,29 @@ class _ServerSettingsState extends State<ServerSettings> {
       },
     );
     controller.dispose();
+    return result;
+  }
+
+  /// 读取服务器端的并行上传数配置（服务器未配置时清空显示）。
+  Future<void> _loadUploadConcurrent() async {
+    if (!PicaServer.instance.enabled) {
+      if (mounted) {
+        setState(() {
+          _maxUploadConcurrent = null;
+          _loadingUploadConcurrent = false;
+        });
+      }
+      return;
+    }
+    setState(() => _loadingUploadConcurrent = true);
+    try {
+      final value = await PicaServer.instance.getMaxUploadConcurrent();
+      if (mounted) setState(() => _maxUploadConcurrent = value);
+    } catch (_) {
+      if (mounted) setState(() => _maxUploadConcurrent = null);
+    } finally {
+      if (mounted) setState(() => _loadingUploadConcurrent = false);
+    }
   }
 
   /// 读取服务器端的订阅默认检查频率（服务器未配置时清空显示）。
@@ -399,6 +460,19 @@ class _ServerSettingsState extends State<ServerSettings> {
                 )
               : Text(_maxConcurrent?.toString() ?? "—"),
           onTap: _editConcurrency,
+        ),
+        ListTile(
+          leading: const Icon(Icons.cloud_upload),
+          title: Text("上传并发".tl),
+          subtitle: Text("客户端同时上传的漫画本数".tl),
+          trailing: _loadingUploadConcurrent
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Text(_maxUploadConcurrent?.toString() ?? "—"),
+          onTap: _editUploadConcurrency,
         ),
         ListTile(
           leading: const Icon(Icons.schedule),

@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -6,9 +7,12 @@ import 'package:crypto/crypto.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pica_comic/base.dart';
+import 'package:pica_comic/components/components.dart';
+import 'package:pica_comic/foundation/log.dart';
 import 'package:pica_comic/network/download_model.dart';
 import 'package:pica_comic/network/pica_server.dart';
 import 'package:pica_comic/tools/io_extensions.dart';
+import 'package:pica_comic/tools/translations.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 
 /// 本地文件夹漫画上传：扫描、规约化打包、构造元数据并发起服务器上传。
@@ -57,8 +61,6 @@ class LocalComicDraft {
   String get directory => sanitizeFileName(title);
 }
 
-enum LocalComicUploadStage { packing, uploading }
-
 class LocalComicException implements Exception {
   const LocalComicException(this.message);
 
@@ -70,8 +72,11 @@ class LocalComicException implements Exception {
 
 const _imageExtensions = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'};
 
-/// 打开系统目录选择器；用户取消时返回 null（仅桌面端可用）。
-Future<String?> pickLocalComicFolder() => getDirectoryPath();
+/// 打开系统目录选择器（支持多选）；用户取消时返回空列表（仅桌面端可用）。
+Future<List<String>> pickLocalComicFolders() async {
+  final paths = await getDirectoryPaths();
+  return paths.whereType<String>().toList();
+}
 
 /// 扫描文件夹第一层的图片并建立草稿；没有图片时抛 [LocalComicException]。
 Future<LocalComicDraft> createLocalComicDraft(String folderPath) async {
@@ -96,10 +101,7 @@ Future<LocalComicDraft> createLocalComicDraft(String folderPath) async {
 }
 
 /// 规约化打包并上传草稿；返回服务器任务 id。
-Future<String> uploadLocalComicDraft(
-  LocalComicDraft draft, {
-  void Function(LocalComicUploadStage stage)? onStage,
-}) async {
+Future<String> uploadLocalComicDraft(LocalComicDraft draft) async {
   if (draft.title.trim().isEmpty) {
     throw const LocalComicException('标题不能为空');
   }
@@ -110,9 +112,7 @@ Future<String> uploadLocalComicDraft(
     zipFile.deleteSync();
   }
   try {
-    onStage?.call(LocalComicUploadStage.packing);
     final sizeMb = await _packLocalComic(draft, zipPath);
-    onStage?.call(LocalComicUploadStage.uploading);
     return await PicaServer.instance.uploadComicArchive(
       id: draft.id,
       title: draft.title,
@@ -131,6 +131,67 @@ Future<String> uploadLocalComicDraft(
       }
     } catch (_) {
       // ignore
+    }
+  }
+}
+
+/// 后台上传队列：提交后立即返回，按服务器「并行上传数」并行推进。
+///
+/// - 并发数来自服务器配置（客户端不自行设定）；每次提交时读取一次，
+///   读取失败回退为一次一本；
+/// - 每本的「打包 + 传输」占一个并发位；
+/// - 每本完成/失败均 toast 提示，失败的本不回队列；
+/// - 应用退出会中断未完成项（不做持久化恢复）。
+class LocalComicUploadQueue {
+  LocalComicUploadQueue._();
+
+  static final LocalComicUploadQueue instance = LocalComicUploadQueue._();
+
+  final _pending = Queue<LocalComicDraft>();
+  int _running = 0;
+  int _limit = 1;
+  bool _refreshingLimit = false;
+
+  /// 提交一本到后台上传队列（不阻塞界面）。
+  void submit(LocalComicDraft draft) {
+    _pending.add(draft);
+    _refreshLimit();
+  }
+
+  /// 读取服务器「并行上传数」；读取失败回退为一次一本。
+  Future<void> _refreshLimit() async {
+    if (_refreshingLimit) return;
+    _refreshingLimit = true;
+    try {
+      _limit = await PicaServer.instance.getMaxUploadConcurrent();
+    } catch (_) {
+      _limit = 1;
+    } finally {
+      _refreshingLimit = false;
+    }
+    _pump();
+  }
+
+  void _pump() {
+    while (_running < _limit && _pending.isNotEmpty) {
+      final draft = _pending.removeFirst();
+      _running++;
+      _run(draft).whenComplete(() {
+        _running--;
+        _pump();
+      });
+    }
+  }
+
+  Future<void> _run(LocalComicDraft draft) async {
+    try {
+      await uploadLocalComicDraft(draft);
+      showToast(message: "《@a》上传任务已创建".tlParams({"a": draft.title}));
+    } catch (e) {
+      LogManager.addLog(
+          LogLevel.error, "LocalComicUpload", "上传失败: ${draft.folderPath}\n$e");
+      showToast(
+          message: "《@a》上传失败: @b".tlParams({"a": draft.title, "b": "$e"}));
     }
   }
 }

@@ -50,12 +50,6 @@ class MePage extends StatelessWidget {
                             const SizedBox(
                               height: 12,
                             ),
-                            if (!App.isMobile) ...[
-                              buildLocalUpload(context, width),
-                              const SizedBox(
-                                height: 12,
-                              ),
-                            ],
                             buildServerTasks(context, width),
                             const SizedBox(
                               height: 12,
@@ -93,6 +87,12 @@ class MePage extends StatelessWidget {
                             const SizedBox(
                               height: 12,
                             ),
+                            if (!App.isMobile) ...[
+                              buildLocalUpload(context, width),
+                              const SizedBox(
+                                height: 12,
+                              ),
+                            ],
                             buildSettings(width),
                           ],
                         ),
@@ -107,12 +107,6 @@ class MePage extends StatelessWidget {
                   const SizedBox(
                     height: 12,
                   ),
-                  if (!App.isMobile) ...[
-                    buildLocalUpload(context, width),
-                    const SizedBox(
-                      height: 12,
-                    ),
-                  ],
                   buildServerTasks(context, width),
                   const SizedBox(
                     height: 12,
@@ -141,6 +135,12 @@ class MePage extends StatelessWidget {
                   const SizedBox(
                     height: 12,
                   ),
+                  if (!App.isMobile) ...[
+                    buildLocalUpload(context, width),
+                    const SizedBox(
+                      height: 12,
+                    ),
+                  ],
                   buildSettings(width),
                 ],
               ],
