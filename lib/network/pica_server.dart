@@ -116,7 +116,6 @@ class PicaServer {
   }
 
   Future<String> uploadDownloadedComic(DownloadedItem item) async {
-    final dio = _dio();
     await DownloadManager().init();
 
     final directory = item.directory ?? DownloadManager().getDirectory(item.id);
@@ -132,53 +131,17 @@ class PicaServer {
     }
     try {
       await _zipDirectory(comicDir, zipPath);
-
-      final coverPath = '${comicDir.path}${pathSep}cover.jpg';
-      final coverFile = File(coverPath);
-
-      final meta = <String, dynamic>{
-        'id': item.id,
-        'title': item.name,
-        'subtitle': item.subTitle,
-        'type': item.type.index,
-        'tags': item.tags,
-        'directory': directory,
-        'json': item.toJson(),
-      };
-
-      final form = FormData.fromMap({
-        'meta': jsonEncode(meta),
-        'zip': await MultipartFile.fromFile(
-          zipPath,
-          filename: '${item.id}.zip',
-        ),
-        if (coverFile.existsSync())
-          'cover': await MultipartFile.fromFile(
-            coverFile.path,
-            filename: 'cover.jpg',
-          ),
-      });
-
-      final res = await dio.post(
-        '/api/v1/tasks/upload',
-        data: form,
-        options: Options(
-          validateStatus: (_) => true,
-          sendTimeout: Duration(seconds: uploadSendTimeoutSeconds),
-        ),
+      return await uploadComicArchive(
+        id: item.id,
+        title: item.name,
+        subtitle: item.subTitle,
+        type: item.type.index,
+        tags: item.tags,
+        directory: directory,
+        json: item.toJson(),
+        zipPath: zipPath,
+        coverPath: '${comicDir.path}${pathSep}cover.jpg',
       );
-      final data = res.data;
-      if (data is! Map) throw Exception('invalid response');
-      if (data['ok'] != true) {
-        final err = (data['error'] ?? 'request failed').toString();
-        if (err == 'task already exists') {
-          throw Exception("任务已存在".tl);
-        }
-        throw Exception(err);
-      }
-      final taskId = (data['taskId'] ?? '').toString();
-      if (taskId.isEmpty) throw Exception('missing taskId');
-      return taskId;
     } finally {
       try {
         if (File(zipPath).existsSync()) {
@@ -188,6 +151,67 @@ class PicaServer {
         // ignore
       }
     }
+  }
+
+  /// 上传漫画归档到服务器任务队列（zip + meta + 可选封面）。
+  ///
+  /// 事实源唯一：已下载漫画上传与本地文件夹上传共用此入口。
+  /// 调用方负责准备 [zipPath] 与封面文件，并在完成后清理临时文件；
+  /// 返回服务器创建的任务 id。
+  Future<String> uploadComicArchive({
+    required String id,
+    required String title,
+    String subtitle = '',
+    required int type,
+    required List<String> tags,
+    required String directory,
+    required Map<String, dynamic> json,
+    required String zipPath,
+    String? coverPath,
+  }) async {
+    final dio = _dio();
+    final coverFile = coverPath == null ? null : File(coverPath);
+
+    final meta = <String, dynamic>{
+      'id': id,
+      'title': title,
+      'subtitle': subtitle,
+      'type': type,
+      'tags': tags,
+      'directory': directory,
+      'json': json,
+    };
+
+    final form = FormData.fromMap({
+      'meta': jsonEncode(meta),
+      'zip': await MultipartFile.fromFile(zipPath, filename: '$id.zip'),
+      if (coverFile != null && coverFile.existsSync())
+        'cover': await MultipartFile.fromFile(
+          coverFile.path,
+          filename: 'cover.jpg',
+        ),
+    });
+
+    final res = await dio.post(
+      '/api/v1/tasks/upload',
+      data: form,
+      options: Options(
+        validateStatus: (_) => true,
+        sendTimeout: Duration(seconds: uploadSendTimeoutSeconds),
+      ),
+    );
+    final data = res.data;
+    if (data is! Map) throw Exception('invalid response');
+    if (data['ok'] != true) {
+      final err = (data['error'] ?? 'request failed').toString();
+      if (err == 'task already exists') {
+        throw Exception("任务已存在".tl);
+      }
+      throw Exception(err);
+    }
+    final taskId = (data['taskId'] ?? '').toString();
+    if (taskId.isEmpty) throw Exception('missing taskId');
+    return taskId;
   }
 
   Future<void> putAuthSession(String source, Map<String, dynamic> data) async {
@@ -411,6 +435,11 @@ class PicaServer {
     final thumb = thumbnail ? '&thumb=1' : '';
     return '$_normalizedBaseUrl/api/v1/comics/${Uri.encodeComponent(id)}'
         '/image?ep=$ep&name=${Uri.encodeQueryComponent(name)}$thumb';
+  }
+
+  /// 漫画封面的完整访问地址。
+  String comicCoverUrl(String id) {
+    return '$_normalizedBaseUrl/api/v1/comics/${Uri.encodeComponent(id)}/cover';
   }
 
   Future<ServerReadInfo> getReadInfo(String id) async {
