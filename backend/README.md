@@ -60,8 +60,11 @@ dart run bin/server.dart
   - `cover`：可选封面文件
 - `GET /api/v1/tasks?limit=50`：列出任务
 - `GET /api/v1/tasks/{id}`：查询任务状态/进度
-- `GET /api/v1/tasks/config`：查询任务并发配置（`maxConcurrent` / `fileConcurrent`）
+- `GET /api/v1/tasks/config`：查询任务并发配置（`maxConcurrent` / `maxUploadConcurrent` / `fileConcurrent`）
 - `PUT /api/v1/tasks/config`：更新任务并发配置（JSON，可单独更新任一字段）
+  - `maxConcurrent`：服务器同时执行任务数（1-20，默认 1）
+  - `maxUploadConcurrent`：客户端同时上传漫画本的并行数（1-20，默认 2）；客户端提交上传时读取并按此并发
+  - `fileConcurrent`：单任务内文件下载并行数（1-16，默认 6）
 - `POST /api/v1/userdata`：可选；需要 `PICA_ENABLE_USERDATA=1`；multipart，字段 `file`（`.picadata`）
 - `GET /api/v1/userdata`：可选；需要 `PICA_ENABLE_USERDATA=1`
 - `POST /api/v1/comics/fetch`：服务端拉取 zip 并入库（JSON）

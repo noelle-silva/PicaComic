@@ -207,6 +207,11 @@ _ConcurrencyPolicy _concurrencyPolicy = const _ConcurrencyPolicy(
   fileConcurrentBySource: {},
 );
 
+/// 客户端同时上传漫画本的并行数上限（1-20）。
+///
+/// 客户端提交上传时读取本配置并按此并发；由服务器决定客户端并发量。
+int _maxUploadConcurrent = 2;
+
 class _TrackedFuture {
   bool done = false;
   late final Future<void> future;
@@ -5290,6 +5295,7 @@ Handler buildHandler({
     return _json(200, {
       'ok': true,
       'maxConcurrent': taskRunner.maxConcurrent,
+      'maxUploadConcurrent': _maxUploadConcurrent,
       'fileConcurrent': _concurrencyPolicy.fileConcurrentDefault,
     });
   });
@@ -5307,6 +5313,13 @@ Handler buildHandler({
       changed = true;
     }
 
+    final rawUploadMax = json['maxUploadConcurrent'];
+    final vUploadMax = int.tryParse((rawUploadMax ?? '').toString());
+    if (vUploadMax != null) {
+      _maxUploadConcurrent = vUploadMax.clamp(1, 20);
+      changed = true;
+    }
+
     final rawFile = json['fileConcurrent'];
     final vFile = int.tryParse((rawFile ?? '').toString());
     if (vFile != null) {
@@ -5321,13 +5334,14 @@ Handler buildHandler({
     if (!changed) {
       return _json(400, {
         'ok': false,
-        'error': 'missing maxConcurrent/fileConcurrent',
+        'error': 'missing maxConcurrent/maxUploadConcurrent/fileConcurrent',
       });
     }
 
     return _json(200, {
       'ok': true,
       'maxConcurrent': taskRunner.maxConcurrent,
+      'maxUploadConcurrent': _maxUploadConcurrent,
       'fileConcurrent': _concurrencyPolicy.fileConcurrentDefault,
     });
   });
