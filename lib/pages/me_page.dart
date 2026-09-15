@@ -12,6 +12,7 @@ import 'history_page.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'image_favorites.dart';
 import 'server_library_page.dart';
+import 'upload_local_comic_page.dart';
 import 'server_subscription_downloads_page.dart';
 import 'server_subscriptions_page.dart';
 import 'server_tasks_page.dart';
@@ -49,6 +50,12 @@ class MePage extends StatelessWidget {
                             const SizedBox(
                               height: 12,
                             ),
+                            if (!App.isMobile) ...[
+                              buildLocalUpload(context, width),
+                              const SizedBox(
+                                height: 12,
+                              ),
+                            ],
                             buildServerTasks(context, width),
                             const SizedBox(
                               height: 12,
@@ -100,6 +107,12 @@ class MePage extends StatelessWidget {
                   const SizedBox(
                     height: 12,
                   ),
+                  if (!App.isMobile) ...[
+                    buildLocalUpload(context, width),
+                    const SizedBox(
+                      height: 12,
+                    ),
+                  ],
                   buildServerTasks(context, width),
                   const SizedBox(
                     height: 12,
@@ -251,6 +264,15 @@ class MePage extends StatelessWidget {
       title: "服务器漫画库".tl,
       description: "查看并下载服务器上的漫画".tl,
       onTap: () => context.to(() => const ServerLibraryPage()),
+    );
+  }
+
+  Widget buildLocalUpload(BuildContext context, double width) {
+    return _MePageCard(
+      icon: const Icon(Icons.upload_file),
+      title: "上传本地漫画".tl,
+      description: "选择本地文件夹上传到服务器".tl,
+      onTap: () => context.to(() => const UploadLocalComicPage()),
     );
   }
 
