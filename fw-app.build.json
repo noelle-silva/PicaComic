@@ -1,0 +1,182 @@
+{
+  "profiles": {
+    "release": {
+      "build": {
+        "command": "node",
+        "args": [
+          "scripts/build-windows.mjs",
+          "--profile",
+          "release"
+        ]
+      },
+      "stageDir": "dist-app/v5-windows",
+      "files": [
+        {
+          "from": "build/windows/x64/runner/Release/pica_comic.exe",
+          "to": "pica_comic.exe"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/flutter_windows.dll",
+          "to": "flutter_windows.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/data",
+          "to": "data"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/Webview2Loader.dll",
+          "to": "Webview2Loader.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/app_links_plugin.dll",
+          "to": "app_links_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/desktop_webview_window_plugin.dll",
+          "to": "desktop_webview_window_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/dynamic_color_plugin.dll",
+          "to": "dynamic_color_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/file_selector_windows_plugin.dll",
+          "to": "file_selector_windows_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/flutter_inappwebview_windows_plugin.dll",
+          "to": "flutter_inappwebview_windows_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/flutter_qjs_plugin.dll",
+          "to": "flutter_qjs_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/local_auth_windows_plugin.dll",
+          "to": "local_auth_windows_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/screen_retriever_plugin.dll",
+          "to": "screen_retriever_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/share_plus_plugin.dll",
+          "to": "share_plus_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/sqlite3.dll",
+          "to": "sqlite3.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/sqlite3_flutter_libs_plugin.dll",
+          "to": "sqlite3_flutter_libs_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/url_launcher_windows_plugin.dll",
+          "to": "url_launcher_windows_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/window_manager_plugin.dll",
+          "to": "window_manager_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Release/zip_flutter.dll",
+          "to": "zip_flutter.dll"
+        },
+        {
+          "from": "images/app_icon.png",
+          "to": "images/app_icon.png"
+        }
+      ]
+    },
+    "dev": {
+      "build": {
+        "command": "node",
+        "args": [
+          "scripts/build-windows.mjs",
+          "--profile",
+          "dev"
+        ]
+      },
+      "stageDir": "dist-app/v5-windows-dev",
+      "files": [
+        {
+          "from": "build/windows/x64/runner/Debug/pica_comic.exe",
+          "to": "pica_comic.exe"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/flutter_windows.dll",
+          "to": "flutter_windows.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/data",
+          "to": "data"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/Webview2Loader.dll",
+          "to": "Webview2Loader.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/app_links_plugin.dll",
+          "to": "app_links_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/desktop_webview_window_plugin.dll",
+          "to": "desktop_webview_window_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/dynamic_color_plugin.dll",
+          "to": "dynamic_color_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/file_selector_windows_plugin.dll",
+          "to": "file_selector_windows_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/flutter_inappwebview_windows_plugin.dll",
+          "to": "flutter_inappwebview_windows_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/flutter_qjs_plugin.dll",
+          "to": "flutter_qjs_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/local_auth_windows_plugin.dll",
+          "to": "local_auth_windows_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/screen_retriever_plugin.dll",
+          "to": "screen_retriever_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/share_plus_plugin.dll",
+          "to": "share_plus_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/sqlite3.dll",
+          "to": "sqlite3.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/sqlite3_flutter_libs_plugin.dll",
+          "to": "sqlite3_flutter_libs_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/url_launcher_windows_plugin.dll",
+          "to": "url_launcher_windows_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/window_manager_plugin.dll",
+          "to": "window_manager_plugin.dll"
+        },
+        {
+          "from": "build/windows/x64/runner/Debug/zip_flutter.dll",
+          "to": "zip_flutter.dll"
+        },
+        {
+          "from": "images/app_icon.png",
+          "to": "images/app_icon.png"
+        }
+      ]
+    }
+  }
+}

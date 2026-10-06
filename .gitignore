@@ -35,6 +35,10 @@ migrate_working_dir/
 .gradle-home/
 /build/
 
+# 平台接入构建产物
+/dist-app/
+/.tmp/
+
 # Symbolication related
 app.*.symbols
 

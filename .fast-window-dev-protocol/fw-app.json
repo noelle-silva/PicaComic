@@ -1,0 +1,19 @@
+{
+  "type": "desktop-app",
+  "id": "picacomic",
+  "name": "PicaComic",
+  "description": "开源多源漫画阅读器（Pica 客户端）",
+  "versionSource": "release.json",
+  "package": {
+    "windowsExecutable": "pica_comic.exe",
+    "icon": "images/app_icon.png"
+  },
+  "displayMode": "default",
+  "commands": [],
+  "reservedNameExemptions": [
+    {
+      "name": "data",
+      "reason": "Flutter Windows 运行资源目录（icudtl.dat、flutter_assets 等），随程序打包，非应用数据目录"
+    }
+  ]
+}
