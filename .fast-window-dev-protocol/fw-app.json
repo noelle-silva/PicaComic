@@ -8,7 +8,6 @@
     "windowsExecutable": "pica_comic.exe",
     "icon": "images/app_icon.png"
   },
-  "displayMode": "default",
   "commands": [],
   "reservedNameExemptions": [
     {
