@@ -73,6 +73,10 @@ reason = "Dart 工具链生成目录"
 path = "android/.gradle"
 reason = "Gradle 缓存目录"
 
+[[exceptions]]
+path = "android/app/src/main/java"
+reason = "Flutter pub get 自动生成 Android 插件注册目录"
+
 [quick-build.env]
 PUB_CACHE = "${EUCLI_CF_DEPS_STORE}/pub"
 CARGO_HOME = "${EUCLI_CF_DEPS_STORE}/cargo"
