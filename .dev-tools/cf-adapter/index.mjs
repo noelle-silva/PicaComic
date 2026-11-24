@@ -138,7 +138,7 @@ async function withShortWorktreePath(worktree, fn) {
     const candidate = `${letter}:`
     if (fs.existsSync(`${candidate}\\`)) continue
     try {
-      execFileSync('subst', [candidate, worktree], { stdio: 'ignore' })
+      execFileSync('subst', [candidate, path.dirname(worktree)], { stdio: 'ignore' })
       drive = candidate
       break
     } catch {
@@ -149,7 +149,7 @@ async function withShortWorktreePath(worktree, fn) {
     return await fn(worktree)
   }
   try {
-    return await fn(`${drive}\\`)
+    return await fn(path.join(`${drive}\\`, path.basename(worktree)))
   } finally {
     try {
       execFileSync('subst', [drive, '/D'], { stdio: 'ignore' })
