@@ -1,0 +1,83 @@
+contract = 3
+
+[app]
+name = "picacomic"
+ports = 0
+
+[commands]
+deps   = "node .dev-tools/cf-adapter/index.mjs deps"
+build  = "node .dev-tools/cf-adapter/index.mjs build"
+start  = "node .dev-tools/cf-adapter/index.mjs start"
+health = "node .dev-tools/cf-adapter/index.mjs health"
+stop   = "node .dev-tools/cf-adapter/index.mjs stop"
+seed   = "node .dev-tools/cf-adapter/index.mjs seed"
+test   = "node .dev-tools/cf-adapter/index.mjs test"
+
+[[exceptions]]
+path = ".dart_tool"
+reason = "Flutter/Dart 工具链强制在源码树内生成"
+
+[[exceptions]]
+path = ".flutter-plugins"
+reason = "Flutter 插件注册表"
+
+[[exceptions]]
+path = ".flutter-plugins-dependencies"
+reason = "Flutter 插件依赖映射"
+
+[[exceptions]]
+path = "windows/flutter/ephemeral"
+reason = "Flutter Windows 临时构建头文件目录"
+
+[[exceptions]]
+path = "linux/flutter/ephemeral"
+reason = "Flutter Linux 临时构建目录"
+
+[[exceptions]]
+path = "macos/Flutter/ephemeral"
+reason = "Flutter macOS 临时构建目录"
+
+[[exceptions]]
+path = "ios/Flutter/ephemeral"
+reason = "Flutter iOS 临时构建目录"
+
+[[exceptions]]
+path = "**/generated_plugin_registrant.*"
+reason = "Flutter 自动生成插件注册源码"
+
+[[exceptions]]
+path = "**/generated_plugins.cmake"
+reason = "Flutter 自动生成 CMake 插件清单"
+
+[[exceptions]]
+path = "**/GeneratedPluginRegistrant.*"
+reason = "Flutter 自动生成移动端插件注册源码"
+
+[[exceptions]]
+path = "**/Generated.xcconfig"
+reason = "Flutter 自动生成 Xcode 配置"
+
+[[exceptions]]
+path = "**/flutter_export_environment.sh"
+reason = "Flutter 自动生成环境导出脚本"
+
+[[exceptions]]
+path = "android/local.properties"
+reason = "Flutter/Android 本地 SDK 路径文件"
+
+[[exceptions]]
+path = "backend/.dart_tool"
+reason = "Dart 工具链生成目录"
+
+[[exceptions]]
+path = "android/.gradle"
+reason = "Gradle 缓存目录"
+
+[[exceptions]]
+path = "android/app/src/main/java"
+reason = "Flutter pub get 自动生成 Android 插件注册目录"
+
+[quick-build.env]
+PUB_CACHE = "${EUCLI_CF_DEPS_STORE}/pub"
+CARGO_HOME = "${EUCLI_CF_DEPS_STORE}/cargo"
+CARGO_TARGET_DIR = "${EUCLI_CF_QUICK_BUILD_DIR}/cargo-target"
