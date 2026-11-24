@@ -55,6 +55,9 @@ function spawnCmd(command, args, opts = {}) {
 function flutterEnv(depsStore, buildDir) {
   const env = { ...process.env }
   env.PUB_CACHE = path.join(depsStore, 'pub')
+  env.GIT_CONFIG_COUNT = '1'
+  env.GIT_CONFIG_KEY_0 = 'core.longpaths'
+  env.GIT_CONFIG_VALUE_0 = 'true'
   env.CARGO_HOME = path.join(depsStore, 'cargo')
   if (buildDir) {
     env.CARGO_TARGET_DIR = path.join(buildDir, 'cargo-target')
