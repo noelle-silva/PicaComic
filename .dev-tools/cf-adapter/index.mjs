@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 
 function emit(payload, exitCode) {
   process.stdout.write(`${JSON.stringify(payload)}\n`)
@@ -65,9 +65,75 @@ function flutterEnv(depsStore, buildDir) {
   return env
 }
 
+const GENERATED_TRACKED_FILES = [
+  'pubspec.lock',
+  'linux/flutter/generated_plugin_registrant.cc',
+  'linux/flutter/generated_plugin_registrant.h',
+  'linux/flutter/generated_plugins.cmake',
+  'macos/Flutter/GeneratedPluginRegistrant.swift',
+  'windows/flutter/generated_plugin_registrant.cc',
+  'windows/flutter/generated_plugin_registrant.h',
+  'windows/flutter/generated_plugins.cmake',
+]
+
+function snapshotGeneratedFiles(worktree) {
+  const snap = new Map()
+  for (const rel of GENERATED_TRACKED_FILES) {
+    const abs = path.join(worktree, rel)
+    if (fs.existsSync(abs)) {
+      snap.set(abs, fs.readFileSync(abs))
+    }
+  }
+  return snap
+}
+
+function restoreGeneratedFiles(snap) {
+  for (const [abs, origBuf] of snap.entries()) {
+    try {
+      const curBuf = fs.existsSync(abs) ? fs.readFileSync(abs) : null
+      if (!curBuf || !curBuf.equals(origBuf)) {
+        fs.writeFileSync(abs, origBuf)
+      }
+    } catch {
+      // ignore restore errors
+    }
+  }
+}
+
+async function withShortWorktreePath(worktree, fn) {
+  if (process.platform !== 'win32') {
+    return await fn(worktree)
+  }
+  const letters = ['Z', 'Y', 'X', 'W', 'V', 'U', 'T', 'S', 'R', 'Q', 'P', 'O', 'N', 'M']
+  let drive = ''
+  for (const letter of letters) {
+    const candidate = `${letter}:`
+    if (fs.existsSync(`${candidate}\\`)) continue
+    try {
+      execFileSync('subst', [candidate, worktree], { stdio: 'ignore' })
+      drive = candidate
+      break
+    } catch {
+      // race with another process or unavailable letter; try next
+    }
+  }
+  if (!drive) {
+    return await fn(worktree)
+  }
+  try {
+    return await fn(`${drive}\\`)
+  } finally {
+    try {
+      execFileSync('subst', [drive, '/D'], { stdio: 'ignore' })
+    } catch {
+      // ignore detach errors
+    }
+  }
+}
+
 async function cleanupBuildOutput(worktree) {
   for (const rel of ['build', 'dist-app', '.tmp', path.join('plugins', 'rhttp', 'rhttp', 'rust', 'target')]) {
-    await fsp.rm(path.join(worktree, rel), { recursive: true, force: true })
+    await fsp.rm(path.join(worktree, rel), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   }
 }
 
@@ -78,10 +144,15 @@ async function cmdDeps() {
   for (const dir of [depsDir, path.join(depsStore, 'pub'), path.join(depsStore, 'cargo')]) {
     await fsp.mkdir(dir, { recursive: true })
   }
-  await spawnCmd('flutter', ['pub', 'get'], {
-    cwd: worktree,
-    env: flutterEnv(depsStore),
-  })
+  const snap = snapshotGeneratedFiles(worktree)
+  try {
+    await spawnCmd('flutter', ['pub', 'get'], {
+      cwd: worktree,
+      env: flutterEnv(depsStore),
+    })
+  } finally {
+    restoreGeneratedFiles(snap)
+  }
 }
 
 async function cmdBuild() {
@@ -91,10 +162,14 @@ async function cmdBuild() {
   const stageDir = path.join(buildDir, 'stage')
   await fsp.mkdir(buildDir, { recursive: true })
   const env = flutterEnv(depsStore, buildDir)
+  const snap = snapshotGeneratedFiles(worktree)
   try {
-    await spawnCmd('node', ['scripts/stage-app.mjs', '--profile', 'release', '--stage-dir', stageDir], {
-      cwd: worktree,
-      env,
+    await withShortWorktreePath(worktree, async shortRoot => {
+      const stageScript = path.join(shortRoot, 'scripts', 'stage-app.mjs')
+      await spawnCmd('node', [stageScript, '--profile', 'release', '--stage-dir', stageDir], {
+        cwd: shortRoot,
+        env,
+      })
     })
     const manifest = JSON.parse(fs.readFileSync(path.join(worktree, '.fast-window-dev-protocol', 'fw-app.json'), 'utf8'))
     const exeName = String(manifest?.package?.windowsExecutable || '').trim()
@@ -105,6 +180,7 @@ async function cmdBuild() {
     return { stageDir, packageDir: path.join(stageDir, 'package'), executable: exePath }
   } finally {
     await cleanupBuildOutput(worktree)
+    restoreGeneratedFiles(snap)
   }
 }
 
